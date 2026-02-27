@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>个人博客</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 2rem auto; max-width: 860px; padding: 0 1rem; }
+        h1 { margin-bottom: 1rem; }
+        .meta { color: #666; font-size: 0.9rem; }
+        .card { border: 1px solid #ddd; border-radius: 10px; padding: 1rem; margin-bottom: 1rem; }
+    </style>
+</head>
+<body>
+<h1>个人博客（Java 后端）</h1>
+<p>前端页面地址：<strong id="site-url"></strong></p>
+<div id="articles">加载中...</div>
+
+<script>
+    document.getElementById('site-url').textContent = window.location.origin + '/';
+
+    async function loadArticles() {
+        const container = document.getElementById('articles');
+        try {
+            const response = await fetch('/api/v1/articles');
+            const data = await response.json();
+            container.innerHTML = data.map(article => `
+                <section class="card">
+                    <h2>${article.title}</h2>
+                    <p>${article.summary}</p>
+                    <p>${article.content}</p>
+                    <p class="meta">作者：${article.author}｜发布时间：${new Date(article.publishedAt).toLocaleString()}</p>
+                </section>
+            `).join('');
+        } catch (error) {
+            container.textContent = '加载失败，请稍后重试。';
+        }
+    }
+
+    loadArticles();
+</script>
+</body>
+</html>
