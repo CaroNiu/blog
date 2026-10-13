@@ -1,0 +1,29 @@
+keystatic.config.ts
+  6084f39780dde97c 1-67
+package.json
+  6084f39780dde97c 12-13
+astro.config.mjs
+  6084f39780dde97c 2,5-6,10
+CLAUDE.md
+  6084f39780dde97c 49-50
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "cd067cf9d6ce58d59157a7133d145adf2c0605b5",
+  "prompts": {
+    "6084f39780dde97c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6753241f-7fa8-4e47-b30b-f0a9115153d4",
+        "model": "glm-5.3-flash"
+      },
+      "human_author": "CaroNiu",
+      "messages": [],
+      "total_additions": 88,
+      "total_deletions": 4,
+      "accepted_lines": 75,
+      "overriden_lines": 0
+    }
+  }
+}
