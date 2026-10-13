@@ -1,0 +1,23 @@
+docs/长期内容规划.md
+  6084f39780dde97c 98
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "d5f544a952b683bb3d915320390ec43c531f759b",
+  "prompts": {
+    "6084f39780dde97c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6753241f-7fa8-4e47-b30b-f0a9115153d4",
+        "model": "glm-5.3-flash"
+      },
+      "human_author": "JMS\\caro.niu",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 1,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    }
+  }
+}
