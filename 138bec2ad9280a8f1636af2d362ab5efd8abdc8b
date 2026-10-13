@@ -1,0 +1,131 @@
+src/content/posts/backend/distributed-tx-2pc-3pc-tcc-saga.md
+  6084f39780dde97c 1-743
+_inbox/7620864119612653610.md
+  6084f39780dde97c 1-278
+src/content/posts/practice/order-timeout-cancel-evolution.md
+  6084f39780dde97c 1-285
+src/content/posts/ai/llm-app-prompt-to-rag.md
+  6084f39780dde97c 1-279
+src/content/posts/backend/api-design-7-best-practices.md
+  6084f39780dde97c 1-385
+src/content/posts/backend/mq-selection-comparison.md
+  6084f39780dde97c 1-364
+src/content/posts/backend/backend-perf-100ms-to-10ms.md
+  6084f39780dde97c 1-414
+_inbox/7621008107690786852.md
+  6084f39780dde97c 1-141
+_inbox/manifest.json
+  6084f39780dde97c 1-2,11,22,33,45-46
+_inbox/7625992318693867562.md
+  6084f39780dde97c 1-621
+src/content/posts/backend/serverless-when-how.md
+  6084f39780dde97c 1-168
+_inbox/7620826561294794795.md
+  6084f39780dde97c 1-167
+src/content/posts/career/ai-era-career-competitiveness.md
+  6084f39780dde97c 1-139
+src/content/posts/backend/istio-service-mesh.md
+  6084f39780dde97c 1-683
+src/content/posts/practice/high-cpu-alert-diagnosis.md
+  6084f39780dde97c 1-623
+src/content/posts/practice/deep-pagination-optimization.md
+  6084f39780dde97c 1-1347
+src/content/posts/backend/distributed-lock-5-implementations.md
+  6084f39780dde97c 1-401
+src/content/posts/backend/db-sharding-when-how.md
+  6084f39780dde97c 1-697
+src/content/posts/career/coding-skill-vs-career-skill.md
+  6084f39780dde97c 1-169
+src/content/posts/backend/jvm-memory-gc-tuning.md
+  6084f39780dde97c 1-570
+src/content/posts/practice/kafka-practice-summary.md
+  6084f39780dde97c 1-1556
+_inbox/7621008107690754084.md
+  6084f39780dde97c 1-280
+src/content/posts/backend/kubernetes-core-concepts.md
+  6084f39780dde97c 1-346
+src/content/posts/backend/api-gateway-selection.md
+  6084f39780dde97c 1-265
+_inbox/7628488008481751083.md
+  6084f39780dde97c 1-1555
+src/content/posts/backend/docker-practical-intro.md
+  6084f39780dde97c 1-485
+src/content/posts/backend/essential-linux-commands.md
+  6084f39780dde97c 1-316
+src/content/posts/backend/cache-penetration-breakdown-avalanche.md
+  6084f39780dde97c 1-407
+src/content/posts/backend/event-driven-architecture.md
+  6084f39780dde97c 1-247
+src/content/posts/practice/nginx-lb-algorithm-tuning.md
+  6084f39780dde97c 1-281
+src/content/posts/practice/payment-callback-idempotency.md
+  6084f39780dde97c 1-447
+src/content/posts/backend/seckill-architecture.md
+  6084f39780dde97c 1-712
+src/content/posts/practice/redis-local-cache.md
+  6084f39780dde97c 1-444
+src/content/posts/backend/elasticsearch-to-production.md
+  6084f39780dde97c 1-1016
+src/content/posts/backend/high-concurrency-from-zero.md
+  6084f39780dde97c 1-428
+src/content/posts/practice/distributed-tx-selection.md
+  6084f39780dde97c 1-1946
+src/content/posts/practice/api-debounce-request-dedup.md
+  6084f39780dde97c 1-1130
+package.json
+  6084f39780dde97c 13-17
+src/content/posts/practice/mongodb-shard-key-mistake.md
+  6084f39780dde97c 1-142
+src/content/posts/backend/mysql-index-principles.md
+  6084f39780dde97c 1-351
+src/content/posts/backend/when-to-use-microservices.md
+  6084f39780dde97c 1-387
+src/content/posts/career/involution-era-competitiveness.md
+  6084f39780dde97c 1-119
+src/content/posts/practice/design-patterns-in-business.md
+  6084f39780dde97c 1-1020
+_inbox/7626551706944536619.md
+  6084f39780dde97c 1-1129
+src/content/posts/backend/backend-starter-first-api.md
+  6084f39780dde97c 1-256
+_inbox/7625563529491513386.md
+  6084f39780dde97c 1-1346
+tools/export-juejin.mjs
+  6084f39780dde97c 5-9,20-22,30,34,38,44-45,48-55,59,63,67-91,96,100-107,111-113,115-134,138,140-141,144-145,151-152,156-157,159
+src/content/posts/backend/external-api-design-guide.md
+  6084f39780dde97c 1-610
+tools/organize-inbox.mjs
+  6084f39780dde97c 1-102
+src/content/posts/practice/legacy-db-switch.md
+  6084f39780dde97c 1-1278
+src/content/posts/practice/inventory-deduction-approaches.md
+  6084f39780dde97c 1-362
+src/content/posts/practice/points-system-design.md
+  6084f39780dde97c 1-364
+src/content/posts/backend/observability-logs-metrics-tracing.md
+  6084f39780dde97c 1-240
+src/content/posts/ai/ai-coding-productivity-300.md
+  6084f39780dde97c 1-315
+src/content/posts/backend/backend-security-defense.md
+  6084f39780dde97c 1-500
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "138bec2ad9280a8f1636af2d362ab5efd8abdc8b",
+  "prompts": {
+    "6084f39780dde97c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6753241f-7fa8-4e47-b30b-f0a9115153d4",
+        "model": "glm-5.3-flash"
+      },
+      "human_author": "CaroNiu",
+      "messages": [],
+      "total_additions": 53169,
+      "total_deletions": 1200,
+      "accepted_lines": 28959,
+      "overriden_lines": 0
+    }
+  }
+}
