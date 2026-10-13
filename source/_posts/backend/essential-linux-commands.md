@@ -1,0 +1,317 @@
+---
+title: "后端必会的 10 个 Linux 命令，不会真的会背锅"
+date: 2026-03-14
+updated: 2026-03-14
+categories:
+  - 后端进阶
+tags: []
+description: "前言：为什么后端必须懂 Linux？ 说实话，我见过太多后端开发者因为不熟悉 Linux 而背锅了： 🤦 服务器磁盘满了不知道怎么看 🤦 程序挂了找不到日志在哪 🤦 CPU 飙升不知道是哪个进程"
+juejin:
+  id: "7616631448961564726"
+  url: https://juejin.cn/post/7616631448961564726
+  views: 130
+  likes: 0
+---
+
+## 前言：为什么后端必须懂 Linux？
+
+说实话，我见过太多后端开发者因为不熟悉 Linux 而背锅了：
+
+-   🤦 服务器磁盘满了不知道怎么看
+-   🤦 程序挂了找不到日志在哪
+-   🤦 CPU 飙升不知道是哪个进程
+-   🤦 文件权限问题搞不定
+
+**Linux 是后端开发者的生存技能，不是加分项。**
+
+这篇文章整理了 10 个最高频的 Linux 命令，学会这些，能解决 80% 的日常问题。
+
+* * *
+
+## 1\. cd - 目录切换
+
+最基础但最常用！
+
+```bash
+cd /home/user          # 进入指定目录
+cd ..                  # 返回上一级
+cd ~                   # 进入用户主目录
+cd -                   # 返回上一次所在目录
+```
+
+**避坑**：目录名有空格要用引号或转义
+
+```bash
+cd "my project"
+cd my\ project
+```
+
+* * *
+
+## 2\. ls - 查看目录内容
+
+```bash
+ls                     # 列出当前目录文件
+ls -l                  # 详细信息（权限、大小、时间）
+ls -la                 # 包含隐藏文件
+ls -lh                 # 人性化显示文件大小
+```
+
+**实用技巧**：
+
+```bash
+# 按时间排序，最新的在最后
+ls -lt
+
+# 只看目录
+ls -d */
+```
+
+* * *
+
+## 3\. grep - 文本搜索神器
+
+找日志、查配置必备！
+
+```perl
+# 在文件中搜索关键词
+grep "error" app.log
+
+# 递归搜索目录下所有文件
+grep -r "error" /var/log/
+
+# 显示行号
+grep -n "error" app.log
+
+# 忽略大小写
+grep -i "ERROR" app.log
+
+# 显示匹配行的前后几行（查上下文很有用）
+grep -A 5 -B 5 "error" app.log
+```
+
+**高频场景**：查日志中的异常
+
+```bash
+grep -n "Exception" app.log | head -20
+```
+
+* * *
+
+## 4\. tail/head - 查看文件头尾
+
+```bash
+# 查看最后 100 行
+tail -100 app.log
+
+# 实时追踪日志（最常用！）
+tail -f app.log
+
+# 查看前 50 行
+head -50 app.log
+
+# 组合：看第 100-200 行
+sed -n '100,200p' app.log
+```
+
+**实战技巧**：实时监控错误日志
+
+```bash
+tail -f app.log | grep --color "ERROR"
+```
+
+* * *
+
+## 5\. ps - 进程管理
+
+程序跑没跑？占用多少资源？看这里。
+
+```perl
+# 查看所有进程
+ps aux
+
+# 查找特定进程
+ps aux | grep python
+
+# 更直观的进程树
+ps -ef --forest
+```
+
+**进阶**：配合 kill 杀掉进程
+
+```perl
+# 找到进程 ID
+ps aux | grep "myapp"
+
+# 杀掉进程
+kill -9 <PID>
+
+# 批量杀掉匹配的进程
+pkill -f "myapp"
+```
+
+* * *
+
+## 6\. top/htop - 系统资源监控
+
+服务器卡了？先看这里！
+
+```bash
+# 经典命令
+top
+
+# 更友好的界面（需要安装）
+htop
+```
+
+**关注指标**：
+
+-   **%CPU**：CPU 使用率
+-   **%MEM**：内存使用率
+-   **load average**：系统负载（1/5/15 分钟）
+
+**快速定位**：
+
+-   CPU 飙高 → 按 `P` 排序
+-   内存飙升 → 按 `M` 排序
+
+* * *
+
+## 7\. df/du - 磁盘空间管理
+
+磁盘满了是生产环境最常见的问题之一。
+
+```bash
+# 查看磁盘使用情况
+df -h
+
+# 查看当前目录大小
+du -sh *
+
+# 查看当前目录下各子目录大小
+du -h --max-depth=1
+
+# 找出最大的文件
+du -ah | sort -n -r | head -10
+```
+
+**实战**：找出占用空间最大的目录
+
+```bash
+du -h --max-depth=1 /var | sort -hr | head -5
+```
+
+* * *
+
+## 8\. chmod/chown - 权限管理
+
+权限问题会导致各种莫名其妙的错误。
+
+```bash
+# 修改文件权限
+chmod 755 script.sh      # rwxr-xr-x
+chmod +x script.sh       # 添加执行权限
+
+# 修改文件所有者
+chown user:group file.txt
+
+# 递归修改目录权限
+chmod -R 755 /var/www
+```
+
+**权限数字含义**：
+
+| 数字 | 权限 | 说明 |
+| --- | --- | --- |
+| 7 | rwx | 读+写+执行 |
+| 6 | rw- | 读+写 |
+| 5 | r-x | 读+执行 |
+| 4 | r-- | 只读 |
+
+* * *
+
+## 9\. netstat/ss - 网络端口查看
+
+端口被占用？连接数异常？用这个。
+
+```perl
+# 查看所有监听端口
+netstat -tlnp
+
+# 更现代的命令
+ss -tlnp
+
+# 查看某个端口的占用
+netstat -tlnp | grep 8080
+
+# 查看所有 TCP 连接
+ss -tan
+```
+
+**实战**：杀掉占用端口的进程
+
+```bash
+# 找到占用的进程
+lsof -i :8080
+
+# 杀掉进程
+kill -9 <PID>
+```
+
+* * *
+
+## 10\. find - 文件搜索
+
+忘记文件放哪了？find 来帮忙。
+
+```arduino
+# 按名称搜索
+find /var/log -name "*.log"
+
+# 按时间搜索（最近 7 天修改的文件）
+find . -mtime -7
+
+# 按大小搜索（大于 100M 的文件）
+find . -size +100M
+
+# 搜索并执行操作
+find /tmp -name "*.tmp" -delete
+```
+
+**高频场景**：找出大文件
+
+```typescript
+find / -type f -size +100M 2>/dev/null
+```
+
+* * *
+
+## 实战场景速查表
+
+| 场景 | 命令组合 |
+| --- | --- |
+| 日志查错误 | `grep -n "ERROR" app.log | tail -50` |
+| 查进程 CPU | `top -p $(pgrep -d',' python)` |
+| 磁盘满了 | `du -h --max-depth=1 | sort -hr | head` |
+| 端口被占用 | `lsof -i :8080` |
+| 杀掉所有某进程 | `pkill -f "myapp"` |
+| 实时监控日志 | `tail -f app.log | grep --color "ERROR | WARN"` |
+
+* * *
+
+## 学习建议
+
+1.  **每天用一点**：在服务器上刻意练习这些命令
+2.  **记不住就 man**：`man grep` 查看帮助文档
+3.  **善用 tab 补全**：少敲键盘，少出错
+4.  **建立自己的命令库**：把常用的命令存到笔记里
+
+* * *
+
+## 总结
+
+这 10 个命令覆盖了后端开发 80% 的日常场景：
+
+✅ 文件操作：`cd`、`ls`、`find` ✅ 日志排查：`grep`、`tail`、`head` ✅ 进程管理：`ps`、`top` ✅ 磁盘管理：`df`、`du` ✅ 权限管理：`chmod`、`chown` ✅ 网络排查：`netstat`、`ss`
+
+**别等出问题了才学，现在就打开终端练习起来！**

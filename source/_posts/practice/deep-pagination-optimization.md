@@ -1,0 +1,1348 @@
+---
+title: "大数据量查询分页实战指南"
+date: 2026-04-07
+updated: 2026-04-07
+categories:
+  - 实战复盘
+tags: []
+description: "一、问题背景：深分页的性能陷阱 1.1 典型场景 电商订单列表查询 运营后台数据导出 1.2 深分页问题根源 传统LIMIT分页原理： MySQL 执行过程： EXPLAIN分析： 关键指标解读： r"
+juejin:
+  id: "7625563529491513386"
+  url: https://juejin.cn/post/7625563529491513386
+  views: 216
+  likes: 0
+---
+
+## 一、问题背景：深分页的性能陷阱
+
+### 1.1 典型场景
+
+**电商订单列表查询**
+
+```diff
+业务需求：用户查看历史订单，支持分页浏览
+数据规模：单用户订单量从几十到数万不等
+查询模式：按创建时间倒序，支持状态筛选
+
+问题现象：
+- 前几页响应速度正常（< 50ms）
+- 翻到第1000页时，响应时间飙升到3秒+
+- 数据库CPU占用飙升至80%
+- 大量慢查询告警
+```
+
+**运营后台数据导出**
+
+```diff
+业务需求：运营人员导出符合条件的用户数据
+数据规模：百万级数据筛选后导出
+查询模式：多条件组合查询 + 分页
+
+问题现象：
+- 导出任务执行超时
+- 数据库连接池耗尽
+- 影响其他业务查询
+```
+
+* * *
+
+### 1.2 深分页问题根源
+
+**传统LIMIT分页原理：**
+
+```sql
+SELECT * FROM orders 
+WHERE user_id = 12345 
+ORDER BY create_time DESC 
+LIMIT 100000, 10;
+```
+
+**MySQL** **执行过程：**
+
+```markdown
+1. 读取索引定位到满足条件的记录
+2. 从第1条开始扫描
+3. 扫描并丢弃前100000条记录（关键问题！）
+4. 读取后10条返回
+
+时间复杂度：O(offset + limit)
+扫描行数 ≈ offset + limit
+```
+
+**EXPLAIN分析：**
+
+```markdown
+mysql> EXPLAIN SELECT * FROM orders 
+       WHERE user_id = 12345 
+       ORDER BY create_time DESC 
+       LIMIT 100000, 10\G
+
+*************************** 1. row ***************************
+           id: 1
+  select_type: SIMPLE
+        table: orders
+   partitions: NULL
+         type: ref
+possible_keys: idx_user_time
+          key: idx_user_time
+      key_len: 8
+          ref: const
+         rows: 156789      -- 预估扫描行数
+     filtered: 100.00
+        Extra: Using index condition; Using filesort
+```
+
+**关键指标解读：**
+
+-   `rows: 156789`：预估需要扫描15万+行
+-   `Using filesort`：需要额外排序操作
+-   实际执行时间随着offset线性增长
+
+* * *
+
+### 1.3 性能对比实测
+
+**测试环境：**
+
+```scss
+MySQL版本：8.0.32
+表数据量：500万订单
+索引：idx_user_time(user_id, create_time)
+硬件：8C16G云服务器
+```
+
+**测试结果：**
+
+| offset | limit | 执行时间 | 扫描行数 | CPU消耗 |
+| --- | --- | --- | --- | --- |
+| 0 | 10 | 2ms | 10 | 低 |
+| 1000 | 10 | 15ms | 1010 | 低 |
+| 10000 | 10 | 120ms | 10010 | 中 |
+| 100000 | 10 | 1.2s | 100010 | 高 |
+| 500000 | 10 | 6.5s | 500010 | 极高 |
+| 1000000 | 10 | 13s+ | 1000010 | 极高 |
+
+**结论：** LIMIT深分页性能随offset线性恶化，offset达到十万级时几乎不可用。
+
+* * *
+
+## 二、解决方案全景图
+
+### 2.1 方案对比总览
+
+| 方案 | 适用场景 | 性能 | 实现复杂度 | 局限性 |
+| --- | --- | --- | --- | --- |
+| 传统LIMIT | 浅分页（<10000） | 差（O(n)） | 简单 | 深分页不可用 |
+| 游标分页 | 连续翻页场景 | 优（O(1)） | 中等 | 不支持跳页 |
+| ID范围查询 | 主键有序场景 | 优（O(1)） | 简单 | 依赖ID连续性 |
+| 子查询优化 | 深分页必须跳页 | 良（O(log n)） | 简单 | 需要唯一索引 |
+| JOIN优化 | 深分页+排序 | 良（O(log n)） | 中等 | 需要覆盖索引 |
+| ES分页 | 复杂搜索场景 | 优 | 高 | 数据同步延迟 |
+
+* * *
+
+## 三、游标分页（推荐方案）
+
+### 3.1 核心原理
+
+```diff
+不使用offset，而是记住上一页最后一条记录的位置
+下一页查询时，从该位置继续向后取数据
+
+原理类似"书签"：
+- 读完第N页，记住最后一条记录的标记
+- 读第N+1页，从标记位置开始
+- 避免扫描前N页数据
+```
+
+**时间复杂度：** O(limit)，与页码无关，性能恒定！
+
+* * *
+
+### 3.2 基础实现：单字段游标
+
+**场景：订单列表按时间倒序分页**
+
+```scss
+// 请求参数
+@Data
+public class OrderPageRequest {
+    private Long userId;
+    private Long lastId;        // 上一页最后一条记录的ID
+    private String lastTime;    // 上一页最后一条记录的时间（可选）
+    private Integer pageSize = 10;
+}
+
+// Controller层
+@GetMapping("/orders")
+public PageResult<OrderVO> listOrders(OrderPageRequest request) {
+    return orderService.pageByCursor(request);
+}
+
+// Service层
+public PageResult<OrderVO> pageByCursor(OrderPageRequest request) {
+    // 构建查询条件
+    LambdaQueryWrapper<Order> wrapper = new LambdaQueryWrapper<>();
+    wrapper.eq(Order::getUserId, request.getUserId());
+    
+    // 游标条件：ID小于上一页最后一条
+    if (request.getLastId() != null) {
+        wrapper.lt(Order::getId, request.getLastId());
+    }
+    
+    // 按ID倒序，取pageSize+1条（用于判断是否有下一页）
+    wrapper.orderByDesc(Order::getId)
+           .last("LIMIT " + (request.getPageSize() + 1));
+    
+    List<Order> orders = orderMapper.selectList(wrapper);
+    
+    // 处理结果
+    boolean hasNext = orders.size() > request.getPageSize();
+    if (hasNext) {
+        orders.remove(orders.size() - 1);  // 移除多余的一条
+    }
+    
+    // 返回结果
+    return PageResult.<OrderVO>builder()
+            .list(orders.stream().map(this::toVO).collect(Collectors.toList()))
+            .hasNext(hasNext)
+            .lastId(hasNext ? orders.get(orders.size() - 1).getId() : null)
+            .build();
+}
+```
+
+**生成的** **SQL** **：**
+
+```sql
+-- 首页查询
+SELECT * FROM orders 
+WHERE user_id = 12345 
+ORDER BY id DESC 
+LIMIT 11;
+
+-- 下一页查询（假设上一页最后ID=987654）
+SELECT * FROM orders 
+WHERE user_id = 12345 
+  AND id < 987654 
+ORDER BY id DESC 
+LIMIT 11;
+```
+
+**性能对比：**
+
+| 页码 | 传统LIMIT | 游标分页 |
+| --- | --- | --- |
+| 第1页 | 2ms | 2ms |
+| 第100页 | 50ms | 2ms |
+| 第10000页 | 1200ms | 2ms |
+| 第100000页 | 13000ms | 2ms |
+
+* * *
+
+### 3.3 进阶实现：联合游标（处理排序）
+
+**问题场景：** 需要按创建时间排序，但时间可能重复
+
+```ini
+订单数据示例：
+ID=100, create_time=2024-01-15 10:30:00
+ID=99,  create_time=2024-01-15 10:30:00  ← 时间相同！
+ID=98,  create_time=2024-01-15 10:30:00  ← 时间相同！
+```
+
+**解决方案：联合** **游标** **（时间 + ID）**
+
+```scss
+@Data
+public class OrderPageRequest {
+    private Long userId;
+    private String lastTime;    // 上一页最后一条的时间
+    private Long lastId;        // 上一页最后一条的ID
+    private Integer pageSize = 10;
+}
+
+public PageResult<OrderVO> pageByCursor(OrderPageRequest request) {
+    LambdaQueryWrapper<Order> wrapper = new LambdaQueryWrapper<>();
+    wrapper.eq(Order::getUserId, request.getUserId());
+    
+    if (request.getLastTime() != null && request.getLastId() != null) {
+        // 联合条件：(时间 < lastTime) OR (时间 = lastTime AND ID < lastId)
+        wrapper.and(w -> w
+            .lt(Order::getCreateTime, request.getLastTime())
+            .or(sub -> sub
+                .eq(Order::getCreateTime, request.getLastTime())
+                .lt(Order::getId, request.getLastId())
+            )
+        );
+    }
+    
+    wrapper.orderByDesc(Order::getCreateTime)
+           .orderByDesc(Order::getId)
+           .last("LIMIT " + (request.getPageSize() + 1));
+    
+    List<Order> orders = orderMapper.selectList(wrapper);
+    
+    boolean hasNext = orders.size() > request.getPageSize();
+    if (hasNext) {
+        orders.remove(orders.size() - 1);
+    }
+    
+    Order last = hasNext || !orders.isEmpty() ? orders.get(orders.size() - 1) : null;
+    
+    return PageResult.<OrderVO>builder()
+            .list(orders.stream().map(this::toVO).collect(Collectors.toList()))
+            .hasNext(hasNext)
+            .lastTime(last != null ? last.getCreateTime().toString() : null)
+            .lastId(last != null ? last.getId() : null)
+            .build();
+}
+```
+
+**生成的** **SQL** **：**
+
+```sql
+SELECT * FROM orders 
+WHERE user_id = 12345 
+  AND (create_time < '2024-01-15 10:30:00' 
+       OR (create_time = '2024-01-15 10:30:00' AND id < 987654))
+ORDER BY create_time DESC, id DESC 
+LIMIT 11;
+```
+
+**关键点：**
+
+-   索引必须覆盖排序字段：`INDEX idx_user_time_id(user_id, create_time, id)`
+-   联合条件保证排序稳定性
+-   时间相同的情况下，按ID区分先后顺序
+
+* * *
+
+### 3.4 前端适配
+
+**传统分页** **UI** **（页码导航）：**
+
+```css
+首页  上一页  [1] [2] [3] ... [100]  下一页  尾页
+```
+
+**游标** **分页** **UI** **（推荐）：**
+
+```css
+↓ 加载更多（移动端常见）
+或
+[上一页] [下一页]（只显示前后页）
+```
+
+**前端代码示例（Vue）：**
+
+```kotlin
+export default {
+  data() {
+    return {
+      orders: [],
+      lastId: null,
+      lastTime: null,
+      hasNext: false,
+      loading: false
+    }
+  },
+  methods: {
+    async loadFirstPage() {
+      this.orders = [];
+      this.lastId = null;
+      this.lastTime = null;
+      await this.loadMore();
+    },
+    
+    async loadMore() {
+      if (this.loading) return;
+      this.loading = true;
+      
+      try {
+        const res = await api.getOrders({
+          userId: this.userId,
+          lastId: this.lastId,
+          lastTime: this.lastTime,
+          pageSize: 10
+        });
+        
+        this.orders.push(...res.data.list);
+        this.hasNext = res.data.hasNext;
+        this.lastId = res.data.lastId;
+        this.lastTime = res.data.lastTime;
+      } finally {
+        this.loading = false;
+      }
+    },
+    
+    // 无限滚动
+    handleScroll() {
+      const scrollTop = document.documentElement.scrollTop;
+      const scrollHeight = document.documentElement.scrollHeight;
+      const clientHeight = document.documentElement.clientHeight;
+      
+      if (scrollTop + clientHeight >= scrollHeight - 100) {
+        if (this.hasNext && !this.loading) {
+          this.loadMore();
+        }
+      }
+    }
+  }
+}
+```
+
+* * *
+
+### 3.5 游标分页的局限性
+
+**局限1：不支持跳页**
+
+```diff
+用户无法直接跳转到第100页
+必须从第1页开始逐页翻阅
+
+适用场景：
+- 移动端无限滚动
+- 社交媒体Feed流
+- 日志查看
+不适用场景：
+- 后台管理系统
+- 需要精确跳页的业务
+```
+
+**局限2：数据实时性**
+
+```diff
+翻页过程中有新数据插入：
+- 新数据排在前面：可能漏看
+- 游标基于时间戳时更明显
+
+解决方案：
+- 使用ID作为游标（相对稳定）
+- 设置合理的业务预期
+```
+
+* * *
+
+## 四、深分页优化方案（支持跳页）
+
+### 4.1 子查询优化
+
+**核心思想：** 先通过子查询定位到目标位置的ID，再关联查询完整数据
+
+```sql
+-- 优化前（扫描100010行）
+SELECT * FROM orders 
+WHERE user_id = 12345 
+ORDER BY id DESC 
+LIMIT 100000, 10;
+
+-- 优化后（先查ID，再关联）
+SELECT o.* FROM orders o
+INNER JOIN (
+    SELECT id FROM orders 
+    WHERE user_id = 12345 
+    ORDER BY id DESC 
+    LIMIT 100000, 10
+) t ON o.id = t.id;
+```
+
+**原理分析：**
+
+```markdown
+子查询只查询ID：
+1. 利用覆盖索引，不需要回表
+2. 只扫描索引树，不读取完整行数据
+3. 扫描数据量大幅减少
+
+外层关联：
+1. 根据子查询返回的10个ID
+2. 精确查找10条完整记录
+3. 回表次数固定为10次
+```
+
+**EXPLAIN对比：**
+
+```yaml
+优化前：
+rows: 100010
+Extra: NULL
+
+优化后（子查询）：
+rows: 10
+Extra: Using index  ← 覆盖索引
+
+优化后（外层关联）：
+rows: 10
+Extra: NULL
+```
+
+**性能提升：**
+
+| offset | 优化前 | 优化后 | 提升比例 |
+| --- | --- | --- | --- |
+| 10000 | 120ms | 15ms | 8x |
+| 100000 | 1.2s | 80ms | 15x |
+| 500000 | 6.5s | 300ms | 21x |
+
+* * *
+
+### 4.2 JOIN优化（另一种写法）
+
+```sql
+SELECT o.* FROM orders o
+JOIN (
+    SELECT id FROM orders 
+    WHERE user_id = 12345 
+    ORDER BY create_time DESC, id DESC
+    LIMIT 100000, 10
+) tmp ON o.id = tmp.id
+ORDER BY o.create_time DESC, o.id DESC;
+```
+
+**注意：** 外层需要重新排序，确保结果顺序正确
+
+* * *
+
+### 4.3 ID范围查询（特殊场景优化）
+
+**适用条件：**
+
+-   主键ID有序且连续（或近似连续）
+-   按主键ID排序
+-   数据删除较少
+
+**实现方案：**
+
+```scss
+public PageResult<OrderVO> pageByIdRange(OrderPageRequest request) {
+    // 计算ID范围
+    long startId = request.getPage() * request.getPageSize();
+    long endId = startId + request.getPageSize();
+    
+    // 范围查询
+    LambdaQueryWrapper<Order> wrapper = new LambdaQueryWrapper<>();
+    wrapper.eq(Order::getUserId, request.getUserId())
+           .between(Order::getId, startId, endId)
+           .orderByDesc(Order::getId);
+    
+    List<Order> orders = orderMapper.selectList(wrapper);
+    
+    // 处理结果...
+}
+```
+
+**生成的** **SQL** **：**
+
+```sql
+SELECT * FROM orders 
+WHERE user_id = 12345 
+  AND id BETWEEN 1000000 AND 1000010
+ORDER BY id DESC;
+```
+
+**局限性：**
+
+-   ID不连续时可能返回少于pageSize条
+-   无法处理多条件筛选
+-   需要业务适配
+
+* * *
+
+### 4.4 MyBatis-Plus集成方案
+
+```less
+// 自定义分页拦截器
+@Configuration
+public class MybatisPlusConfig {
+    
+    @Bean
+    public MybatisPlusInterceptor mybatisPlusInterceptor() {
+        MybatisPlusInterceptor interceptor = new MybatisPlusInterceptor();
+        
+        // 分页插件
+        PaginationInnerInterceptor paginationInterceptor = 
+            new PaginationInnerInterceptor(DbType.MYSQL);
+        paginationInterceptor.setMaxLimit(500L);  // 单页最大条数
+        paginationInterceptor.setOverflow(false); // 溢出不回到第一页
+        
+        interceptor.addInnerInterceptor(paginationInterceptor);
+        return interceptor;
+    }
+}
+
+// Mapper接口
+public interface OrderMapper extends BaseMapper<Order> {
+    
+    // 传统分页（MyBatis-Plus内置）
+    IPage<Order> selectPageByUserId(
+        Page<Order> page, 
+        @Param("userId") Long userId
+    );
+    
+    // 子查询优化分页（自定义）
+    @Select("""
+        SELECT o.* FROM orders o
+        INNER JOIN (
+            SELECT id FROM orders 
+            WHERE user_id = #{userId}
+            ORDER BY id DESC 
+            LIMIT #{offset}, #{limit}
+        ) t ON o.id = t.id
+        """)
+    List<Order> selectPageOptimized(
+        @Param("userId") Long userId,
+        @Param("offset") long offset,
+        @Param("limit") int limit
+    );
+}
+
+// Service使用
+public IPage<OrderVO> pageWithOptimization(OrderPageRequest request) {
+    // 判断是否需要优化
+    long offset = (long) (request.getPageNum() - 1) * request.getPageSize();
+    
+    if (offset > 10000) {
+        // 深分页使用子查询优化
+        List<Order> orders = orderMapper.selectPageOptimized(
+            request.getUserId(), 
+            offset, 
+            request.getPageSize()
+        );
+        
+        // 查询总数（可以缓存）
+        Long total = orderMapper.selectCount(
+            new LambdaQueryWrapper<Order>()
+                .eq(Order::getUserId, request.getUserId())
+        );
+        
+        // 构造分页结果
+        Page<OrderVO> page = new Page<>(request.getPageNum(), request.getPageSize());
+        page.setRecords(orders.stream().map(this::toVO).collect(Collectors.toList()));
+        page.setTotal(total);
+        return page;
+    } else {
+        // 浅分页使用传统方式
+        Page<Order> page = new Page<>(request.getPageNum(), request.getPageSize());
+        return orderMapper.selectPageByUserId(page, request.getUserId())
+                .convert(this::toVO);
+    }
+}
+```
+
+* * *
+
+## 五、复杂业务场景实战
+
+### 5.1 场景一：多条件组合查询 + 深分页
+
+**业务需求：**
+
+```diff
+电商订单列表：
+- 筛选条件：订单状态、时间范围、商品名称、金额范围
+- 排序：支持多字段排序（时间、金额）
+- 分页：支持跳页
+```
+
+**挑战：**
+
+-   多条件导致索引选择困难
+-   不同排序字段需要不同索引
+-   深分页性能恶化
+
+**解决方案：**
+
+```scss
+// 动态SQL + 子查询优化
+@Service
+public class OrderQueryService {
+    
+    public PageResult<OrderVO> complexQuery(OrderQueryRequest request) {
+        // 1. 构建筛选条件
+        LambdaQueryWrapper<Order> wrapper = buildQueryWrapper(request);
+        
+        // 2. 判断是否命中索引
+        boolean indexHit = checkIndexHit(wrapper, request);
+        
+        // 3. 选择分页策略
+        if (indexHit && request.getPageNum() > 100) {
+            // 命中索引且深分页 → 子查询优化
+            return pageWithSubquery(wrapper, request);
+        } else if (!indexHit && request.getPageNum() > 10) {
+            // 未命中索引 → ES查询
+            return pageWithES(request);
+        } else {
+            // 浅分页 → 传统查询
+            return pageWithLimit(wrapper, request);
+        }
+    }
+    
+    private boolean checkIndexHit(LambdaQueryWrapper<Order> wrapper, OrderQueryRequest request) {
+        // 分析查询条件，判断是否能命中复合索引
+        // 简化示例：状态 + 时间范围查询命中 idx_status_time
+        if (request.getStatus() != null && request.getStartTime() != null) {
+            return true;
+        }
+        return false;
+    }
+    
+    private PageResult<OrderVO> pageWithSubquery(
+            LambdaQueryWrapper<Order> wrapper, 
+            OrderQueryRequest request) {
+        
+        long offset = (long) (request.getPageNum() - 1) * request.getPageSize();
+        
+        // 子查询只查ID（利用覆盖索引）
+        String subSql = buildSubquery(wrapper, request, offset);
+        
+        // 外层关联查完整数据
+        List<Order> orders = orderMapper.selectBySubquery(subSql);
+        
+        // 查询总数（可缓存）
+        Long total = getCachedTotal(wrapper);
+        
+        return PageResult.of(orders, total, request.getPageNum(), request.getPageSize());
+    }
+    
+    private String buildSubquery(LambdaQueryWrapper<Order> wrapper, 
+                                  OrderQueryRequest request, 
+                                  long offset) {
+        // 构建子查询SQL
+        StringBuilder sql = new StringBuilder();
+        sql.append("SELECT id FROM orders WHERE 1=1 ");
+        
+        if (request.getStatus() != null) {
+            sql.append("AND status = '").append(request.getStatus()).append("' ");
+        }
+        if (request.getStartTime() != null) {
+            sql.append("AND create_time >= '").append(request.getStartTime()).append("' ");
+        }
+        if (request.getEndTime() != null) {
+            sql.append("AND create_time <= '").append(request.getEndTime()).append("' ");
+        }
+        
+        // 排序
+        sql.append("ORDER BY ").append(request.getOrderField()).append(" ");
+        sql.append(request.getOrderDirection()).append(" ");
+        
+        // 分页
+        sql.append("LIMIT ").append(offset).append(", ").append(request.getPageSize());
+        
+        return sql.toString();
+    }
+}
+```
+
+* * *
+
+### 5.2 场景二：用户数据导出
+
+**业务需求：**
+
+```diff
+运营后台导出用户数据：
+- 筛选条件：注册时间、用户等级、消费金额等
+- 数据量：筛选后可能数十万条
+- 导出格式：Excel
+- 要求：不能影响线上业务
+```
+
+**问题：**
+
+-   单次查询数据量过大，内存溢出
+-   长时间占用数据库连接
+-   影响线上正常查询
+
+**解决方案：流式查询 + 分批处理**
+
+```scss
+@Service
+public class UserExportService {
+    
+    @Autowired
+    private SqlSessionFactory sqlSessionFactory;
+    
+    public void exportUsers(UserExportRequest request, OutputStream outputStream) {
+        // 使用流式查询，避免OOM
+        try (SqlSession sqlSession = sqlSessionFactory.openSession(ExecutorType.REUSE)) {
+            Connection connection = sqlSession.getConnection();
+            
+            // 设置流式查询参数
+            PreparedStatement stmt = connection.prepareStatement(
+                buildExportSql(request),
+                ResultSet.TYPE_FORWARD_ONLY,
+                ResultSet.CONCUR_READ_ONLY
+            );
+            stmt.setFetchSize(Integer.MIN_VALUE);  // MySQL流式查询关键
+            
+            ResultSet rs = stmt.executeQuery();
+            
+            // 创建Excel Writer
+            ExcelWriter writer = EasyExcel.write(outputStream, UserExportVO.class).build();
+            WriteSheet writeSheet = EasyExcel.writerSheet("用户数据").build();
+            
+            // 分批读取写入
+            List<UserExportVO> batch = new ArrayList<>(1000);
+            int rowNum = 0;
+            
+            while (rs.next()) {
+                UserExportVO vo = mapToVO(rs);
+                batch.add(vo);
+                
+                if (batch.size() >= 1000) {
+                    writer.write(batch, writeSheet);
+                    batch.clear();
+                    rowNum += 1000;
+                    
+                    // 休息一下，降低数据库压力
+                    if (rowNum % 10000 == 0) {
+                        Thread.sleep(100);
+                        log.info("已导出 {} 条", rowNum);
+                    }
+                }
+            }
+            
+            // 写入剩余数据
+            if (!batch.isEmpty()) {
+                writer.write(batch, writeSheet);
+            }
+            
+            writer.finish();
+        }
+    }
+    
+    private String buildExportSql(UserExportRequest request) {
+        StringBuilder sql = new StringBuilder();
+        sql.append("SELECT id, name, phone, level, register_time, total_amount ");
+        sql.append("FROM users WHERE 1=1 ");
+        
+        if (request.getStartTime() != null) {
+            sql.append("AND register_time >= '").append(request.getStartTime()).append("' ");
+        }
+        if (request.getEndTime() != null) {
+            sql.append("AND register_time <= '").append(request.getEndTime()).append("' ");
+        }
+        if (request.getLevel() != null) {
+            sql.append("AND level = ").append(request.getLevel()).append(" ");
+        }
+        
+        sql.append("ORDER BY id");  // 按主键排序，提高效率
+        
+        return sql.toString();
+    }
+}
+```
+
+**关键配置：**
+
+```kotlin
+// MyBatis配置流式查询
+@Configuration
+public class MybatisConfig {
+    
+    @Bean
+    public ConfigurationCustomizer mybatisConfigurationCustomizer() {
+        return configuration -> {
+            // 启用流式查询
+            configuration.setDefaultFetchSize(Integer.MIN_VALUE);
+        };
+    }
+}
+
+// 或在数据源配置
+spring:
+  datasource:
+    url: jdbc:mysql://localhost:3306/db?useCursorFetch=true&defaultFetchSize=1000
+```
+
+* * *
+
+### 5.3 场景三：实时排行榜分页
+
+**业务需求：**
+
+```diff
+游戏排行榜：
+- 排序：分数倒序
+- 筛选：时间段、地区
+- 实时性：秒级更新
+- 分页：查看排名附近的玩家
+```
+
+**挑战：**
+
+-   排序字段（分数）频繁更新
+-   传统分页性能差
+-   需要支持"我的排名"定位
+
+**解决方案：Redis Sorted Set +** **游标** **分页**
+
+```ini
+@Service
+public class LeaderboardService {
+    
+    @Autowired
+    private RedisTemplate<String, Object> redisTemplate;
+    
+    private static final String LEADERBOARD_KEY = "game:leaderboard:";
+    
+    /**
+     * 获取排行榜分页数据
+     */
+    public PageResult<RankVO> getLeaderboard(LeaderboardRequest request) {
+        String key = LEADERBOARD_KEY + request.getSeason();
+        
+        // 计算查询范围
+        long start = (long) (request.getPageNum() - 1) * request.getPageSize();
+        long end = start + request.getPageSize() - 1;
+        
+        // 从Redis获取排名数据（ZREVRANGE按分数倒序）
+        Set<ZSetOperations.TypedTuple<Object>> tuples = 
+            redisTemplate.opsForZSet().reverseRangeWithScores(key, start, end);
+        
+        // 获取总数
+        Long total = redisTemplate.opsForZSet().size(key);
+        
+        // 构建结果
+        List<RankVO> list = new ArrayList<>();
+        long rank = start + 1;
+        for (ZSetOperations.TypedTuple<Object> tuple : tuples) {
+            RankVO vo = new RankVO();
+            vo.setRank(rank++);
+            vo.setUserId(Long.parseLong(tuple.getValue().toString()));
+            vo.setScore(tuple.getScore());
+            list.add(vo);
+        }
+        
+        return PageResult.of(list, total, request.getPageNum(), request.getPageSize());
+    }
+    
+    /**
+     * 获取玩家排名及周围玩家
+     */
+    public RankDetailVO getMyRank(Long userId, String season) {
+        String key = LEADERBOARD_KEY + season;
+        
+        // 获取玩家排名（ZREVRANK，分数高的排前面）
+        Long rank = redisTemplate.opsForZSet().reverseRank(key, userId.toString());
+        
+        if (rank == null) {
+            return null;  // 玩家不在榜单中
+        }
+        
+        // 获取玩家分数
+        Double score = redisTemplate.opsForZSet().score(key, userId.toString());
+        
+        // 获取周围玩家（前后各5名）
+        long start = Math.max(0, rank - 5);
+        long end = rank + 5;
+        
+        Set<ZSetOperations.TypedTuple<Object>> neighbors = 
+            redisTemplate.opsForZSet().reverseRangeWithScores(key, start, end);
+        
+        // 构建结果
+        RankDetailVO result = new RankDetailVO();
+        result.setMyRank(rank + 1);  // 排名从1开始
+        result.setMyScore(score);
+        
+        List<RankVO> neighborList = new ArrayList<>();
+        long neighborRank = start + 1;
+        for (ZSetOperations.TypedTuple<Object> tuple : neighbors) {
+            RankVO vo = new RankVO();
+            vo.setRank(neighborRank++);
+            vo.setUserId(Long.parseLong(tuple.getValue().toString()));
+            vo.setScore(tuple.getScore());
+            neighborList.add(vo);
+        }
+        result.setNeighbors(neighborList);
+        
+        return result;
+    }
+    
+    /**
+     * 更新玩家分数（实时）
+     */
+    public void updateScore(Long userId, String season, double score) {
+        String key = LEADERBOARD_KEY + season;
+        redisTemplate.opsForZSet().add(key, userId.toString(), score);
+    }
+}
+```
+
+**Redis命令对照：**
+
+```bash
+# 添加/更新分数
+ZADD game:leaderboard:2024Q1 15000 "user_123"
+
+# 获取排行榜（分数倒序）
+ZREVRANGE game:leaderboard:2024Q1 0 9 WITHSCORES
+
+# 获取玩家排名
+ZREVRANK game:leaderboard:2024Q1 "user_123"
+
+# 获取玩家分数
+ZSCORE game:leaderboard:2024Q1 "user_123"
+```
+
+* * *
+
+## 六、Elasticsearch分页方案
+
+### 6.1 何时使用ES分页
+
+**适用场景：**
+
+```
+✓ 复杂全文搜索（商品名称、描述）
+✓ 多字段模糊匹配
+✓ 聚合统计 + 分页
+✓ MySQL索引无法覆盖的复杂查询
+```
+
+**不适用场景：**
+
+```
+✗ 简单的主键/外键查询
+✗ 数据一致性要求极高（ES有同步延迟）
+✗ 数据更新极频繁（索引压力大）
+```
+
+* * *
+
+### 6.2 ES分页方案对比
+
+| 方案 | 原理 | 性能 | 深度限制 | 适用场景 |
+| --- | --- | --- | --- | --- |
+| from/size | 跳过前N条 | 差 | index.max_result_window=10000 | 浅分页 |
+| scroll | 快照遍历 | 良 | 无限制 | 数据导出、全量遍历 |
+| search_after | 游标分页 | 优 | 无限制 | 实时深分页 |
+
+* * *
+
+### 6.3 search_after实现
+
+```java
+@Service
+public class ProductSearchService {
+    
+    @Autowired
+    private RestHighLevelClient esClient;
+    
+    /**
+     * 游标分页查询商品
+     */
+    public PageResult<ProductVO> searchProducts(ProductSearchRequest request) throws IOException {
+        SearchRequest searchRequest = new SearchRequest("products");
+        SearchSourceBuilder sourceBuilder = new SearchSourceBuilder();
+        
+        // 构建查询条件
+        BoolQueryBuilder boolQuery = QueryBuilders.boolQuery();
+        if (StringUtils.isNotBlank(request.getKeyword())) {
+            boolQuery.must(QueryBuilders.matchQuery("name", request.getKeyword()));
+        }
+        if (request.getCategoryId() != null) {
+            boolQuery.filter(QueryBuilders.termQuery("categoryId", request.getCategoryId()));
+        }
+        if (request.getMinPrice() != null) {
+            boolQuery.filter(QueryBuilders.rangeQuery("price").gte(request.getMinPrice()));
+        }
+        
+        sourceBuilder.query(boolQuery);
+        sourceBuilder.size(request.getPageSize());
+        
+        // 排序（search_after必须包含唯一字段）
+        sourceBuilder.sort("sales", SortOrder.DESC);
+        sourceBuilder.sort("id", SortOrder.ASC);  // 唯一字段保证顺序
+        
+        // 设置search_after（下一页的起点）
+        if (request.getSearchAfter() != null) {
+            sourceBuilder.searchAfter(request.getSearchAfter().toArray(new Object[0]));
+        }
+        
+        // 只返回需要的字段
+        sourceBuilder.fetchSource(new String[]{"id", "name", "price", "sales"}, null);
+        
+        searchRequest.source(sourceBuilder);
+        
+        // 执行查询
+        SearchResponse response = esClient.search(searchRequest, RequestOptions.DEFAULT);
+        
+        // 处理结果
+        List<ProductVO> products = new ArrayList<>();
+        Object[] lastSortValues = null;
+        
+        for (SearchHit hit : response.getHits()) {
+            ProductVO product = JSON.parseObject(hit.getSourceAsString(), ProductVO.class);
+            products.add(product);
+            lastSortValues = hit.getSortValues();  // 获取排序值作为下一页的search_after
+        }
+        
+        // 构建返回结果
+        PageResult<ProductVO> result = new PageResult<>();
+        result.setList(products);
+        result.setSearchAfter(lastSortValues);  // 返回给前端用于下一页查询
+        result.setHasNext(products.size() == request.getPageSize());
+        
+        return result;
+    }
+}
+
+// 请求参数
+@Data
+public class ProductSearchRequest {
+    private String keyword;
+    private Long categoryId;
+    private BigDecimal minPrice;
+    private BigDecimal maxPrice;
+    private Integer pageSize = 20;
+    
+    // 游标参数（上一页最后一条的排序值）
+    private List<Object> searchAfter;
+}
+```
+
+* * *
+
+### 6.4 scroll实现（数据导出）
+
+```ini
+@Service
+public class ProductExportService {
+    
+    public void exportProducts(ProductSearchRequest request, OutputStream outputStream) 
+            throws IOException {
+        
+        // 1. 初始化scroll查询
+        SearchRequest searchRequest = new SearchRequest("products");
+        SearchSourceBuilder sourceBuilder = new SearchSourceBuilder();
+        
+        sourceBuilder.query(buildQuery(request));
+        sourceBuilder.size(1000);  // 每批1000条
+        sourceBuilder.sort("id", SortOrder.ASC);
+        
+        searchRequest.source(sourceBuilder);
+        searchRequest.scroll(TimeValue.timeValueMinutes(5));  // scroll保持5分钟
+        
+        // 2. 首次查询
+        SearchResponse response = esClient.search(searchRequest, RequestOptions.DEFAULT);
+        String scrollId = response.getScrollId();
+        
+        // 3. 创建Excel Writer
+        ExcelWriter writer = EasyExcel.write(outputStream, ProductExportVO.class).build();
+        WriteSheet writeSheet = EasyExcel.writerSheet("商品数据").build();
+        
+        // 4. 循环获取数据
+        int totalExported = 0;
+        while (true) {
+            List<ProductExportVO> batch = new ArrayList<>();
+            
+            for (SearchHit hit : response.getHits()) {
+                batch.add(JSON.parseObject(hit.getSourceAsString(), ProductExportVO.class));
+            }
+            
+            if (batch.isEmpty()) {
+                break;
+            }
+            
+            // 写入Excel
+            writer.write(batch, writeSheet);
+            totalExported += batch.size();
+            
+            // 获取下一批
+            SearchScrollRequest scrollRequest = new SearchScrollRequest(scrollId);
+            scrollRequest.scroll(TimeValue.timeValueMinutes(5));
+            response = esClient.scroll(scrollRequest, RequestOptions.DEFAULT);
+            
+            log.info("已导出 {} 条", totalExported);
+        }
+        
+        // 5. 清理scroll
+        ClearScrollRequest clearScrollRequest = new ClearScrollRequest();
+        clearScrollRequest.addScrollId(scrollId);
+        esClient.clearScroll(clearScrollRequest, RequestOptions.DEFAULT);
+        
+        writer.finish();
+    }
+}
+```
+
+* * *
+
+## 七、分页最佳实践总结
+
+### 7.1 方案选择决策树
+
+```objectivec
+需要跳页？
+├─ YES → 查询深度？
+│         ├─ < 10000页 → 传统LIMIT分页
+│         └─ >= 10000页 → 子查询优化
+│
+└─ NO（连续翻页）→ 数据源？
+                  ├─ MySQL → 游标分页
+                  ├─ Redis → Sorted Set + ZRANGE
+                  └─ ES → search_after
+
+复杂查询？
+├─ YES → 使用ES
+└─ NO → 使用MySQL
+
+数据导出？
+└─ YES → MySQL流式查询 / ES scroll
+```
+
+* * *
+
+### 7.2 索引设计原则
+
+```sql
+-- 原则1：覆盖索引包含查询字段
+-- 避免回表，提升性能
+CREATE INDEX idx_user_status_time_id ON orders(user_id, status, create_time, id);
+
+-- 原则2：排序字段在索引末尾
+-- 支持filesort优化
+CREATE INDEX idx_user_time ON orders(user_id, create_time);
+
+-- 原则3：联合索引遵循最左前缀
+-- 查询条件按索引顺序组合
+SELECT * FROM orders WHERE user_id = ? AND status = ? ORDER BY create_time DESC;
+
+-- 原则4：唯一字段加入排序
+-- 保证游标分页稳定性
+ORDER BY create_time DESC, id DESC
+```
+
+* * *
+
+### 7.3 性能监控指标
+
+```less
+// 分页查询监控
+@Aspect
+@Component
+public class PageQueryMonitor {
+    
+    @Around("execution(* com.example.service.*Service.page*(..))")
+    public Object monitor(ProceedingJoinPoint joinPoint) throws Throwable {
+        long start = System.currentTimeMillis();
+        
+        try {
+            Object result = joinPoint.proceed();
+            
+            long duration = System.currentTimeMillis() - start;
+            
+            // 记录慢分页
+            if (duration > 1000) {
+                log.warn("慢分页查询: method={}, duration={}ms, args={}",
+                    joinPoint.getSignature().getName(),
+                    duration,
+                    Arrays.toString(joinPoint.getArgs()));
+                
+                // 发送告警
+                alertService.sendSlowPageAlert(joinPoint.getSignature().getName(), duration);
+            }
+            
+            return result;
+        } catch (Throwable e) {
+            log.error("分页查询异常", e);
+            throw e;
+        }
+    }
+}
+
+// 关键监控指标
+1. 分页查询P99延迟
+2. 慢分页数量（>1s）
+3. 数据库CPU使用率
+4. 索引命中率
+5. 扫描行数/返回行数比值
+```
+
+* * *
+
+### 7.4 常见踩坑与解决
+
+**坑1：count查询拖慢整体性能**
+
+```kotlin
+// 问题：深分页时count查询也很慢
+SELECT COUNT(*) FROM orders WHERE user_id = ?;  // 扫描全表
+
+// 解决方案1：缓存总数
+@Cacheable(value = "orderCount", key = "#userId", unless = "#result == null")
+public Long getOrderCount(Long userId) {
+    return orderMapper.selectCount(wrapper);
+}
+
+// 解决方案2：估算总数
+public Long estimateCount(Long userId) {
+    // 使用EXPLAIN估算
+    return explainService.estimateCount("orders", "user_id = " + userId);
+}
+
+// 解决方案3：放弃总数（无限滚动场景）
+// 前端只显示"加载更多"，不显示总页数
+```
+
+**坑2：排序字段有** **null值**
+
+```sql
+// 问题：null值排序不稳定，导致游标分页重复或遗漏
+ORDER BY create_time DESC  // create_time可能为null
+
+// 解决方案：使用COALESCE或IFNULL
+ORDER BY IFNULL(create_time, '1970-01-01') DESC, id DESC
+```
+
+**坑3：数据删除导致** **游标** **丢失**
+
+```csharp
+// 问题：用户查看第N页时，前面有数据被删除，游标定位错误
+
+// 解决方案：使用稳定的游标字段
+// ❌ 使用offset游标
+// ✅ 使用ID或时间戳游标
+
+// 游标基于ID，不受数据删除影响
+WHERE id < #{lastId}
+```
+
+**坑4：并发更新导致数据不一致**
+
+```java
+// 问题：翻页过程中有新数据插入，可能看到重复数据
+
+// 解决方案1：快照读（设置事务隔离级别）
+@Transactional(isolation = Isolation.REPEATABLE_READ)
+public PageResult<Order> pageOrders(PageRequest request) {
+    // 同一事务内看到相同的数据快照
+}
+
+// 解决方案2：使用游标分页（天然避免）
+// 游标基于ID，新插入的数据ID > lastId，不会重复
+```
+
+* * *
+
+## 八、总结
+
+### 核心要点
+
+1.  **深分页的本质**：LIMIT offset性能随offset线性恶化
+    
+2.  **游标** **分页**：O(1)复杂度，性能恒定，但不支持跳页
+    
+3.  **子查询** **优化**：先查ID再关联，适合必须跳页的深分页场景
+    
+4.  **索引设计**：覆盖索引 + 排序字段，是性能优化的基础
+    
+5.  **技术选型**：
+    
+    1.  简单查询 → MySQL游标分页
+    2.  复杂查询 → Elasticsearch
+    3.  排行榜 → Redis Sorted Set
+    4.  数据导出 → 流式查询/scroll
+6.  **监控告警**：慢分页及时发现，避免线上故障

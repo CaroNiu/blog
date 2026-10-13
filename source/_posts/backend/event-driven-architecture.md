@@ -1,0 +1,248 @@
+---
+title: "事件驱动架构：异步解耦的最佳实践"
+date: 2026-03-24
+updated: 2026-03-24
+categories:
+  - 后端进阶
+tags: []
+description: "事件驱动架构：异步解耦的最佳实践 一、什么是事件驱动？ 1.1 传统调用 vs 事件驱动 1.2 核心组件 组件 作用 Event 事件对象 Producer 事件生产者 Consumer 事件消费者"
+juejin:
+  id: "7620339315886391302"
+  url: https://juejin.cn/post/7620339315886391302
+  views: 160
+  likes: 0
+---
+
+## 事件驱动架构：异步解耦的最佳实践
+
+> 事件驱动架构是微服务解耦的核心方案。本文从原理到实战，带你掌握事件驱动设计。
+
+* * *
+
+### 一、什么是事件驱动？
+
+#### 1.1 传统调用 vs 事件驱动
+
+```scss
+传统调用（同步）：
+OrderService.create() → 调用 InventoryService.deduct() → 调用 PaymentService.pay()
+                    ↓ 失败
+             全部回滚
+
+事件驱动（异步）：
+OrderService.create() → 发送 OrderCreatedEvent
+  ↓
+InventoryService 监听 → 扣减库存 → 发送 StockDeductedEvent
+  ↓
+PaymentService 监听 → 处理支付
+```
+
+#### 1.2 核心组件
+
+| 组件 | 作用 |
+| --- | --- |
+| Event | 事件对象 |
+| Producer | 事件生产者 |
+| Consumer | 事件消费者 |
+| Event Bus | 事件总线（MQ） |
+
+* * *
+
+### 二、事件驱动优势
+
+```
+✅ 服务解耦 - 服务间不直接调用
+✅ 弹性伸缩 - 消费者独立扩展
+✅ 最终一致 - 保证数据最终一致
+✅ 流量削峰 - MQ 缓冲流量
+```
+
+* * *
+
+### 三、实战代码
+
+#### 3.1 定义事件
+
+```kotlin
+@Data
+public class OrderCreatedEvent {
+    private String orderId;
+    private String userId;
+    private BigDecimal amount;
+    private List<OrderItem> items;
+    private Long timestamp;
+}
+```
+
+#### 3.2 发送事件
+
+```scss
+@Service
+public class OrderService {
+    
+    @Autowired
+    private ApplicationEventPublisher publisher;
+    
+    @Autowired
+    private RocketMQTemplate mqTemplate;
+    
+    public void createOrder(OrderRequest request) {
+        // 1. 创建订单
+        Order order = orderMapper.insert(request);
+        
+        // 2. 发送事件
+        OrderCreatedEvent event = OrderCreatedEvent.builder()
+            .orderId(order.getId())
+            .userId(order.getUserId())
+            .amount(order.getAmount())
+            .items(order.getItems())
+            .timestamp(System.currentTimeMillis())
+            .build();
+        
+        mqTemplate.asyncSend("order-created", event, new SendCallback() {
+            @Override
+            public void onSuccess(SendResult result) {
+                log.info("事件发送成功");
+            }
+            @Override
+            public void onException(Throwable e) {
+                log.error("事件发送失败", e);
+            }
+        });
+    }
+}
+```
+
+#### 3.3 消费事件
+
+```less
+@Service
+@RocketMQMessageListener(
+    topic = "order-created",
+    consumerGroup = "inventory-consumer"
+)
+public class InventoryConsumer implements RocketMQListener<OrderCreatedEvent> {
+    
+    @Autowired
+    private InventoryService inventoryService;
+    
+    @Override
+    public void onMessage(OrderCreatedEvent event) {
+        try {
+            // 幂等性检查
+            if (processed(event.getOrderId())) {
+                return;
+            }
+            
+            // 扣减库存
+            for (OrderItem item : event.getItems()) {
+                inventoryService.deduct(item.getProductId(), item.getQuantity());
+            }
+            
+            // 发送下一个事件
+            eventPublisher.publishEvent(new StockDeductedEvent(event));
+            
+        } catch (Exception e) {
+            log.error("库存扣减失败", e);
+            // 进入死信队列
+        }
+    }
+}
+```
+
+* * *
+
+### 四、常见问题
+
+#### 4.1 幂等性
+
+```typescript
+// 使用 Redis 去重
+public boolean isDuplicate(String eventId) {
+    return !redisTemplate.opsForValue()
+        .setIfAbsent("event:" + eventId, "1", 24, TimeUnit.HOURS);
+}
+```
+
+#### 4.2 顺序性
+
+```arduino
+// 使用消息队列的分区
+// 相同 orderId 的消息发到同一个分区
+rocketMQTemplate.syncSendOrderly(
+    "order-topic",
+    message,
+    orderId  // 分区键
+);
+```
+
+#### 4.3 事务性
+
+```typescript
+// 事务消息
+@Transactional
+public void createOrder(OrderRequest request) {
+    Order order = orderMapper.insert(request);
+    
+    // 事务消息：本地事务成功才发送
+    TransactionMQProducer producer = new TransactionMQProducer();
+    producer.sendMessageInTransaction(
+        new Message("order-topic", JSON.toJSONBytes(order)),
+        new LocalTransactionExecuter() {
+            @Override
+            public LocalTransactionState executeLocalTransactionBranch(Message msg, Object arg) {
+                // 执行业务逻辑
+                return LocalTransactionState.COMMIT_MESSAGE;
+            }
+        }
+    );
+}
+```
+
+* * *
+
+### 五、架构模式
+
+#### 5.1 事件溯源（Event Sourcing）
+
+```csharp
+// 不存储状态，只存储事件
+@Entity
+public class OrderAggregate {
+    private String orderId;
+    private List<OrderEvent> events = new ArrayList<>();
+    
+    public void apply(OrderCreatedEvent event) {
+        events.add(event);
+        // 重放所有事件得到当前状态
+    }
+}
+```
+
+#### 5.2 CQRS
+
+```less
+// 读写分离
+@Service
+public class OrderQueryService {
+    // 读：从 Elasticsearch/Redis 查询
+}
+
+@Service
+public class OrderCommandService {
+    // 写：生成事件，写入 Event Store
+}
+```
+
+* * *
+
+### 六、技术选型
+
+| MQ | 特点 | 适用场景 |
+| --- | --- | --- |
+| Kafka | 高吞吐、持久化 | 日志、大数据 |
+| RabbitMQ | 路由灵活 | 企业集成 |
+| RocketMQ | 事务消息 | 电商金融 |
+| Pulsar | 云原生 | 多租户 |
+
+* * *

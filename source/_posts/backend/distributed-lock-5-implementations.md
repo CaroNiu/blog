@@ -1,0 +1,402 @@
+---
+title: "分布式锁的 5 种实现方式，你用过几种？"
+date: 2026-03-18
+updated: 2026-03-18
+categories:
+  - 后端进阶
+  - 高并发库存与缓存
+tags: []
+description: "前言 分布式锁是后端开发的核心技能，面试必问，生产必用。 这篇文章总结了 5 种分布式锁实现方式，从简单到复杂，总有一款适合你。 一、分布式锁的核心要求 1.1 基本要求 特性 说明 互斥性 同一时间"
+juejin:
+  id: "7618098747672100918"
+  url: https://juejin.cn/post/7618098747672100918
+  views: 198
+  likes: 0
+---
+
+## 前言
+
+分布式锁是后端开发的核心技能，面试必问，生产必用。
+
+这篇文章总结了 5 种分布式锁实现方式，从简单到复杂，总有一款适合你。
+
+* * *
+
+## 一、分布式锁的核心要求
+
+### 1.1 基本要求
+
+| 特性 | 说明 |
+| --- | --- |
+| **互斥性** | 同一时间只有一个客户端能获取锁 |
+| **安全性** | 只有加锁的客户端才能解锁 |
+| **可重入** | 同一线程可以重复获取锁 |
+| **高可用** | 锁服务不能单点故障 |
+
+### 1.2 常见使用场景
+
+```
+场景1：库存扣减
+用户下单 → 获取库存锁 → 扣减库存 → 释放锁
+
+场景2：定时任务
+每5分钟执行一次 → 获取分布式锁 → 执行成功则释放，失败则放弃
+
+场景3：接口幂等
+重复请求 → 获取请求ID锁 → 已处理则返回结果，未处理则执行业务
+```
+
+* * *
+
+## 二、实现方式 1：MySQL 分布式锁
+
+### 2.1 基于唯一索引
+
+**原理**：利用数据库唯一索引的排他性。
+
+```sql
+-- 创建锁表
+CREATE TABLE distributed_lock (
+    lock_name VARCHAR(64) NOT NULL,
+    lock_holder VARCHAR(64) NOT NULL,
+    expire_time TIMESTAMP NOT NULL,
+    PRIMARY KEY (lock_name)
+);
+```
+
+```typescript
+@Service
+public class MySQLDistributedLock {
+    
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
+    
+    public boolean tryLock(String lockName, String holder, int expireSeconds) {
+        try {
+            jdbcTemplate.update(
+                "INSERT INTO distributed_lock (lock_name, lock_holder, expire_time) VALUES (?, ?, DATE_ADD(NOW(), INTERVAL ? SECOND))",
+                lockName, holder, expireSeconds
+            );
+            return true;
+        } catch (DuplicateKeyException e) {
+            return false;
+        }
+    }
+    
+    public void unlock(String lockName, String holder) {
+        jdbcTemplate.update(
+            "DELETE FROM distributed_lock WHERE lock_name = ? AND lock_holder = ?",
+            lockName, holder
+        );
+    }
+}
+```
+
+**优点**：简单、无需额外组件 **缺点**：性能差、依赖数据库可用性
+
+### 2.2 基于乐观锁
+
+```ini
+-- 版本号控制
+UPDATE stock SET count = count - 1, version = version + 1 
+WHERE product_id = 1 AND version = #{version} AND count > 0;
+```
+
+* * *
+
+## 三、实现方式 2：Redis 单节点锁
+
+### 3.1 SETNX 命令
+
+```typescript
+@Service
+public class RedisLock {
+    
+    @Autowired
+    private StringRedisTemplate redisTemplate;
+    
+    public boolean tryLock(String lockKey, String requestId, int expireSeconds) {
+        Boolean result = redisTemplate.opsForValue()
+            .setIfAbsent(lockKey, requestId, expireSeconds, TimeUnit.SECONDS);
+        return Boolean.TRUE.equals(result);
+    }
+    
+    public void unlock(String lockKey, String requestId) {
+        // 原子性解锁：判断是不是自己加的锁，是则删除
+        String script = 
+            "if redis.call('get', KEYS[1]) == ARGV[1] then " +
+            "    return redis.call('del', KEYS[1]) " +
+            "else " +
+            "    return 0 " +
+            "end";
+        
+        redisTemplate.execute(
+            new DefaultRedisScript<>(script, Long.class),
+            Collections.singletonList(lockKey),
+            requestId
+        );
+    }
+}
+```
+
+### 3.2 存在的问题
+
+```diff
+问题1：锁续期
+- 业务执行时间 > 锁过期时间
+- 解决方案：看门狗自动续期
+
+问题2：主从延迟
+- 主节点挂锁，还没同步到从节点，主节点挂了
+- 从节点升级为主，锁丢失
+- 解决方案：RedLock
+```
+
+* * *
+
+## 四、实现方式 3：Redisson（推荐）
+
+### 4.1 什么是 Redisson？
+
+Redisson 是 Redis 的 Java 客户端，提供了完善的分布式锁实现。
+
+### 4.2 使用方法
+
+```java
+@Configuration
+public class RedissonConfig {
+    
+    @Bean
+    public RedissonClient redissonClient() {
+        Config config = new Config();
+        config.useSingleServer()
+            .setAddress("redis://127.0.0.1:6379")
+            .setDatabase(0);
+        return Redisson.create(config);
+    }
+}
+
+@Service
+public class OrderService {
+    
+    @Autowired
+    private RedissonClient redissonClient;
+    
+    public void createOrder(Long productId) {
+        String lockKey = "lock:product:" + productId;
+        RLock lock = redissonClient.getLock(lockKey);
+        
+        try {
+            // 尝试获取锁，最多等待10秒，锁30秒后自动释放
+            boolean locked = lock.tryLock(10, 30, TimeUnit.SECONDS);
+            if (!locked) {
+                throw new RuntimeException("获取锁失败");
+            }
+            
+            // 执行业务逻辑
+            doCreateOrder(productId);
+            
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } finally {
+            // 释放锁
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
+        }
+    }
+}
+```
+
+### 4.3 Redisson 的优势
+
+| 特性 | 说明 |
+| --- | --- |
+| 可重入 | 同一线程可重复获取锁 |
+| 看门狗 | 自动续期，防止业务执行中锁过期 |
+| 阻塞等待 | 获取不到锁时，可设置等待时间 |
+| 公平锁 | 按获取锁的顺序排队 |
+| 读写锁 | 读读共享、读写互斥、写写互斥 |
+
+### 4.4 源码解析
+
+```scss
+// 看门狗自动续期原理
+private void renewExpiration() {
+    // 启动定时任务，每 1/3 过期时间检查一次
+    Timeout task = commandExecutor.getConnectionManager()
+        .newTimeout(new TimerTask() {
+            @Override
+            public void run(Timeout timeout) throws Exception {
+                // 执行续期命令
+                CompletionStage<Boolean> future = renewExpirationAsync();
+                future.thenAccept(res -> {
+                    if (res) {
+                        // 续期成功，继续下一次检查
+                        renewExpiration();
+                    }
+                });
+            }
+        }, internalLockLeaseTime / 3, TimeUnit.MILLISECONDS);
+}
+```
+
+* * *
+
+## 五、实现方式 4：ZooKeeper
+
+### 5.1 原理
+
+```bash
+ZooKeeper 临时顺序节点实现：
+1. 客户端创建临时顺序节点 /lock/product_0000000001
+2. 判断是不是最小序号节点，是则获取锁成功
+3. 不是则监听前一个节点，等待释放
+4. 锁释放时删除节点，触发监听，下一个节点获取锁
+```
+
+### 5.2 代码实现
+
+```typescript
+@Component
+public class ZkDistributedLock {
+    
+    private CuratorFramework client;
+    
+    @PostConstruct
+    public void init() {
+        client = CuratorFrameworkFactory.builder()
+            .connectString("127.0.0.1:2181")
+            .retryPolicy(new ExponentialBackoffRetry(1000, 3))
+            .build();
+        client.start();
+    }
+    
+    public boolean tryLock(String lockPath) {
+        InterProcessMutex mutex = new InterProcessMutex(client, "/locks/" + lockPath);
+        try {
+            return mutex.acquire(10, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+    
+    public void unlock(InterProcessMutex mutex) {
+        try {
+            mutex.release();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+}
+```
+
+**优点**：可靠性高、自动释放（会话断开自动删节点） **缺点**：性能比 Redis 差、需要维护 ZK 集群
+
+* * *
+
+## 六、实现方式 5：RedLock（不推荐）
+
+### 6.1 什么是 RedLock？
+
+RedLock 是 Redis 作者提出的多节点锁算法，解决主从延迟问题。
+
+### 6.2 算法原理
+
+```markdown
+假设有 5 个 Redis 节点：
+1. 获取当前时间戳 T1
+2. 依次向 5 个节点获取锁，设置超时时间
+3. 统计成功获取锁的节点数 N
+4. 获取锁总耗时 T2 - T1
+5. 如果 N >= 3 且 T2 - T1 < 锁过期时间，则获取锁成功
+6. 如果失败，向所有节点释放锁
+```
+
+### 6.3 为什么不推荐？
+
+```markdown
+争议点：
+1. 时钟漂移问题
+2. 节点故障恢复问题
+3. 性能开销大（需要访问多个节点）
+
+结论：
+- 大多数场景用 Redisson 就够了
+- 极高可靠性要求用 ZooKeeper
+```
+
+* * *
+
+## 七、方案选型建议
+
+| 方案 | 优点 | 缺点 | 适用场景 |
+| --- | --- | --- | --- |
+| **MySQL** | 简单、无需额外组件 | 性能差 | 低并发、简单场景 |
+| **Redis SETNX** | 简单、性能好 | 有锁续期问题 | 简单分布式锁 |
+| **Redisson** | 功能完善、自动续期 | 依赖 Redis | 大多数场景（推荐） |
+| **ZooKeeper** | 可靠性高 | 性能一般 | 金融级可靠性要求 |
+| **RedLock** | 理论完备 | 复杂、有争议 | 极特殊场景 |
+
+* * *
+
+## 八、生产环境注意事项
+
+### 8.1 锁续期
+
+```arduino
+// 设置合理的过期时间
+// 太短：业务没执行完锁就释放了
+// 太长：异常情况下锁很久不释放
+// 推荐：使用 Redisson 看门狗自动续期
+```
+
+### 8.2 幂等性
+
+```csharp
+// 分布式锁 + 幂等性双重保证
+public void processOrder(String orderId) {
+    // 1. 幂等性检查
+    if (redisTemplate.opsForValue().setIfAbsent("order:processed:" + orderId, "1", 1, TimeUnit.DAYS)) {
+        // 2. 获取分布式锁
+        RLock lock = redissonClient.getLock("lock:order:" + orderId);
+        try {
+            if (lock.tryLock(5, 30, TimeUnit.SECONDS)) {
+                // 执行业务
+                doProcess(orderId);
+            }
+        } finally {
+            lock.unlock();
+        }
+    }
+}
+```
+
+### 8.3 监控告警
+
+```csharp
+// 获取锁失败告警
+if (!lock.tryLock(5, 30, TimeUnit.SECONDS)) {
+    // 发送告警
+    alertService.send("获取锁失败: " + lockKey);
+    throw new LockAcquireException("获取锁失败");
+}
+```
+
+* * *
+
+## 总结
+
+5 种分布式锁实现方式：
+
+✅ **MySQL**：简单但性能差 ✅ **Redis SETNX**：简单但需要自己处理续期 ✅ **Redisson**：功能完善，推荐大多数场景 ✅ **ZooKeeper**：高可靠，金融场景 ✅ **RedLock**：理论完备但不推荐
+
+**推荐**：
+
+-   一般场景 → **Redisson**
+-   金融级可靠性 → **ZooKeeper**
+-   简单低并发 → **MySQL**
+
+* * *
+
+> 💡 **互动**：你们项目用的哪种分布式锁方案？遇到过什么问题？评论区聊聊！
