@@ -1,0 +1,39 @@
+CLAUDE.md
+  6084f39780dde97c 1-51
+src/content.config.ts
+  6084f39780dde97c 1-31
+package.json
+  6084f39780dde97c 1-14
+src/layouts/BaseLayout.astro
+  6084f39780dde97c 1-86
+.gitignore
+  6084f39780dde97c 1-12
+tsconfig.json
+  6084f39780dde97c 1-5
+src/pages/index.astro
+  6084f39780dde97c 1-58
+astro.config.mjs
+  6084f39780dde97c 1-7
+src/pages/posts/[...id].astro
+  6084f39780dde97c 1-31
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "7293c45ccf48cba7b1e35c2e1948f17ba29f753e",
+  "prompts": {
+    "6084f39780dde97c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6753241f-7fa8-4e47-b30b-f0a9115153d4",
+        "model": "glm-5.3-flash"
+      },
+      "human_author": "JMS\\caro.niu",
+      "messages": [],
+      "total_additions": 295,
+      "total_deletions": 0,
+      "accepted_lines": 295,
+      "overriden_lines": 0
+    }
+  }
+}
