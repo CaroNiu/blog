@@ -1,0 +1,31 @@
+---
+import { getCollection, render } from 'astro:content';
+import BaseLayout from '../../layouts/BaseLayout.astro';
+
+export async function getStaticPaths() {
+  const posts = await getCollection('posts', ({ data }) => import.meta.env.DEV || !data.draft);
+  return posts.map((post) => ({ params: { id: post.id }, props: { post } }));
+}
+
+const { post } = Astro.props;
+const { Content } = await render(post);
+const fmt = (d: Date) => d.toISOString().slice(0, 10);
+---
+
+<BaseLayout title={`${post.data.title} · 后端不背锅`} description={post.data.summary}>
+  <article>
+    <p><a href="/">← 返回首页</a></p>
+    <h1>{post.data.title}</h1>
+    <p style="color: var(--text-secondary);">
+      {fmt(post.data.pubDate)}
+      {post.data.series && ` · 系列：${post.data.series}`}
+      {post.data.tags.length > 0 && ` · ${post.data.tags.map((t) => `#${t}`).join(' ')}`}
+      {post.data.juejin?.url && (
+        <span>
+          {' '}· <a href={post.data.juejin.url}>掘金版本</a>
+        </span>
+      )}
+    </p>
+    <Content />
+  </article>
+</BaseLayout>
