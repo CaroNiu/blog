@@ -1,7 +1,7 @@
 import { defineConfig } from 'astro/config';
 
-// 部署后把 site 换成正式域名（影响 RSS/sitemap/SEO）
+// 正式域名已绑定（影响 RSS/sitemap/SEO）
 export default defineConfig({
-  site: 'https://example.com',
+  site: 'https://novasolo.online',
   language: 'zh-CN',
 });
