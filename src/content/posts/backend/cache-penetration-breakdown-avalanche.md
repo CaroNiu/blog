@@ -1,0 +1,407 @@
+---
+title: "Redis 缓存穿透、击穿、雪崩：一次讲清楚"
+pubDate: 2026-03-16
+category: backend
+series: 高并发库存与缓存
+tags: []
+summary: "前言 面试 Redis 必问，生产环境必遇的三大缓存问题：穿透、击穿、雪崩。 这三个概念名字很像，但问题和解决方案完全不同。很多候选人搞混了，面试官一听就知道你懂不懂。 这篇文章带你一次讲清楚，每个都"
+draft: false
+juejin:
+  id: "7617277037111246891"
+  url: https://juejin.cn/post/7617277037111246891
+  views: 290
+  likes: 0
+
+---
+## 前言
+
+面试 Redis 必问，生产环境必遇的三大缓存问题：**穿透、击穿、雪崩**。
+
+这三个概念名字很像，但问题和解决方案完全不同。很多候选人搞混了，面试官一听就知道你懂不懂。
+
+这篇文章带你一次讲清楚，每个都有图解 + 代码 + 实战方案。
+
+* * *
+
+## 一、缓存穿透（Cache Penetration）
+
+### 1.1 什么是缓存穿透？
+
+**问题描述**：请求的数据在缓存中不存在，数据库中也不存在，导致每次请求都打到数据库。
+
+```markdown
+请求 → 查缓存（miss） → 查数据库（无数据） → 返回空
+     ↓
+   重复请求，每次都查数据库
+```
+
+**典型场景**：
+
+-   恶意攻击：用不存在的 ID 批量请求
+-   数据被误删：缓存和数据库都没数据
+-   业务逻辑错误：查询了不存在的数据
+
+### 1.2 解决方案
+
+#### 方案 1：布隆过滤器（推荐）
+
+在缓存之前加一层布隆过滤器，快速判断数据是否存在。
+
+```kotlin
+// RedisBloom 布隆过滤器
+@Bean
+public RBloomFilter<String> userBloomFilter() {
+    RBloomFilter<String> bloomFilter = redissonClient.getBloomFilter("userFilter");
+    // 初始化：预计 100 万数据，误判率 0.01
+    bloomFilter.tryInit(1000000L, 0.01);
+    return bloomFilter;
+}
+
+// 查询时先判断
+public User getUser(Long id) {
+    // 1. 布隆过滤器判断
+    if (!bloomFilter.contains(id.toString())) {
+        return null; // 一定不存在，直接返回
+    }
+    
+    // 2. 查缓存
+    User user = redisTemplate.opsForValue().get("user:" + id);
+    if (user != null) {
+        return user;
+    }
+    
+    // 3. 查数据库
+    user = userMapper.selectById(id);
+    if (user != null) {
+        redisTemplate.opsForValue().set("user:" + id, user, 30, TimeUnit.MINUTES);
+    }
+    return user;
+}
+```
+
+**布隆** **过滤器** **原理**：
+
+-   使用多个哈希函数映射到位数组
+-   一定不存在的数据会被准确过滤
+-   可能存在的数据会有少量误判（可接受）
+
+#### 方案 2：缓存空值
+
+把查询为空的结果也缓存起来。
+
+```sql
+public User getUser(Long id) {
+    String key = "user:" + id;
+    User user = redisTemplate.opsForValue().get(key);
+    
+    if (user != null) {
+        // 空值标记
+        if (user.getId() == null) {
+            return null;
+        }
+        return user;
+    }
+    
+    user = userMapper.selectById(id);
+    if (user != null) {
+        redisTemplate.opsForValue().set(key, user, 30, TimeUnit.MINUTES);
+    } else {
+        // 缓存空值，短时间过期
+        User emptyUser = new User();
+        redisTemplate.opsForValue().set(key, emptyUser, 5, TimeUnit.MINUTES);
+    }
+    return user;
+}
+```
+
+**注意**：空值缓存时间要短，防止数据更新后还是返回空。
+
+#### 方案 3：参数校验
+
+在入口处拦截非法参数。
+
+```less
+@GetMapping("/user/{id}")
+public User getUser(@PathVariable @Min(1) @Max(10000000) Long id) {
+    return userService.getUser(id);
+}
+```
+
+* * *
+
+## 二、缓存击穿（Cache Breakdown）
+
+### 2.1 什么是缓存击穿？
+
+**问题描述**：热点数据突然过期，大量请求同时打到数据库。
+
+```
+缓存过期瞬间：
+请求1 → 查缓存（miss） → 查数据库 ✓
+请求2 → 查缓存（miss） → 查数据库 ✓  
+请求3 → 查缓存（miss） → 查数据库 ✓
+...（N个请求同时打库）
+```
+
+**典型场景**：
+
+-   秒杀活动：热点商品缓存过期
+-   微博热搜：某条微博缓存失效
+-   大 V 主页：用户缓存被清理
+
+### 2.2 解决方案
+
+#### 方案 1：互斥锁（Mutex）
+
+只允许一个线程重建缓存，其他线程等待。
+
+```kotlin
+public User getUserWithLock(Long id) {
+    String key = "user:" + id;
+    String lockKey = "lock:user:" + id;
+    
+    // 1. 查缓存
+    User user = redisTemplate.opsForValue().get(key);
+    if (user != null) {
+        return user;
+    }
+    
+    // 2. 获取锁
+    boolean locked = redisTemplate.opsForValue()
+        .setIfAbsent(lockKey, "1", 10, TimeUnit.SECONDS);
+    
+    try {
+        if (!locked) {
+            // 没拿到锁，短暂等待后重试
+            Thread.sleep(50);
+            return getUserWithLock(id);
+        }
+        
+        // 3. 双重检查
+        user = redisTemplate.opsForValue().get(key);
+        if (user != null) {
+            return user;
+        }
+        
+        // 4. 查数据库并重建缓存
+        user = userMapper.selectById(id);
+        if (user != null) {
+            redisTemplate.opsForValue().set(key, user, 30, TimeUnit.MINUTES);
+        }
+        return user;
+    } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return null;
+    } finally {
+        // 5. 释放锁
+        redisTemplate.delete(lockKey);
+    }
+}
+```
+
+#### 方案 2：逻辑过期（永不过期）
+
+缓存不设过期时间，通过逻辑时间判断是否过期。
+
+```kotlin
+@Data
+public class RedisData<T> {
+    private T data;
+    private LocalDateTime expireTime; // 逻辑过期时间
+}
+
+public User getUserWithLogicalExpire(Long id) {
+    String key = "user:" + id;
+    
+    // 1. 查缓存
+    RedisData<User> redisData = (RedisData<User>) redisTemplate.opsForValue().get(key);
+    
+    if (redisData == null) {
+        return null; // 数据不存在
+    }
+    
+    // 2. 判断是否逻辑过期
+    if (redisData.getExpireTime().isAfter(LocalDateTime.now())) {
+        return redisData.getData(); // 未过期
+    }
+    
+    // 3. 已过期，尝试获取锁重建
+    String lockKey = "lock:user:" + id;
+    boolean locked = redisTemplate.opsForValue()
+        .setIfAbsent(lockKey, "1", 10, TimeUnit.SECONDS);
+    
+    if (locked) {
+        // 4. 开启线程异步重建缓存
+        CompletableFuture.runAsync(() -> {
+            try {
+                User user = userMapper.selectById(id);
+                if (user != null) {
+                    RedisData<User> newData = new RedisData<>();
+                    newData.setData(user);
+                    newData.setExpireTime(LocalDateTime.now().plusMinutes(30));
+                    redisTemplate.opsForValue().set(key, newData);
+                }
+            } finally {
+                redisTemplate.delete(lockKey);
+            }
+        });
+    }
+    
+    // 5. 返回过期数据（总比没有好）
+    return redisData.getData();
+}
+```
+
+**适用场景**：对一致性要求不高的热点数据。
+
+* * *
+
+## 三、缓存雪崩（Cache Avalanche）
+
+### 3.1 什么是缓存雪崩？
+
+**问题描述**：大量缓存同时过期，或 Redis 宕机，导致所有请求打到数据库。
+
+```
+Redis 宕机：
+请求1 → Redis 连接失败 → 查数据库 ✓
+请求2 → Redis 连接失败 → 查数据库 ✓
+请求3 → Redis 连接失败 → 查数据库 ✓
+...（数据库被打爆）
+```
+
+**典型场景**：
+
+-   缓存集中过期：凌晨批量清除缓存
+-   Redis 集群故障：主从切换、节点宕机
+-   缓存预热失败：服务重启后缓存为空
+
+### 3.2 解决方案
+
+#### 方案 1：过期时间加随机值
+
+避免大量缓存同时过期。
+
+```ini
+// 基础过期时间 + 随机值（0-300秒）
+int expireTime = 1800 + RandomUtil.randomInt(300);
+redisTemplate.opsForValue().set(key, value, expireTime, TimeUnit.SECONDS);
+```
+
+#### 方案 2：多级缓存
+
+本地缓存 + Redis + 数据库，层层防护。
+
+```scss
+@Component
+public class MultiLevelCache {
+    
+    @Autowired
+    private RedisTemplate<String, Object> redisTemplate;
+    
+    // Caffeine 本地缓存
+    private LoadingCache<String, User> localCache = Caffeine.newBuilder()
+        .maximumSize(1000)
+        .expireAfterWrite(1, TimeUnit.MINUTES)
+        .build(key -> loadFromRedis(key));
+    
+    public User get(String key) {
+        // 1. 查本地缓存
+        User user = localCache.getIfPresent(key);
+        if (user != null) {
+            return user;
+        }
+        
+        // 2. 查 Redis
+        user = (User) redisTemplate.opsForValue().get(key);
+        if (user != null) {
+            localCache.put(key, user); // 回填本地缓存
+            return user;
+        }
+        
+        // 3. 查数据库
+        user = loadFromDatabase(key);
+        if (user != null) {
+            redisTemplate.opsForValue().set(key, user, 30, TimeUnit.MINUTES);
+            localCache.put(key, user);
+        }
+        return user;
+    }
+}
+```
+
+#### 方案 3：熔断降级
+
+数据库压力大时，直接熔断返回默认值。
+
+```less
+@HystrixCommand(
+    fallbackMethod = "getUserFallback",
+    commandProperties = {
+        @HystrixProperty(name = "circuitBreaker.enabled", value = "true"),
+        @HystrixProperty(name = "circuitBreaker.requestVolumeThreshold", value = "10"),
+        @HystrixProperty(name = "circuitBreaker.sleepWindowInMilliseconds", value = "10000")
+    }
+)
+public User getUser(Long id) {
+    // 正常逻辑
+}
+
+// 降级方法
+public User getUserFallback(Long id) {
+    return new User(); // 返回空对象或默认值
+}
+```
+
+#### 方案 4：Redis 高可用
+
+-   **主从复制**：读写分离，提高可用性
+-   **哨兵模式**：自动故障转移
+-   **集群模式**：分片存储，水平扩展
+
+```yaml
+# Redis 集群配置
+spring:
+  redis:
+    cluster:
+      nodes:
+        - 192.168.1.101:6379
+        - 192.168.1.102:6379
+        - 192.168.1.103:6379
+        - 192.168.1.104:6379
+        - 192.168.1.105:6379
+        - 192.168.1.106:6379
+      max-redirects: 3
+```
+
+* * *
+
+## 四、三者的区别对比
+
+| 问题 | 现象 | 原因 | 核心解决方案 |
+| --- | --- | --- | --- |
+| **缓存穿透** | 查询不存在的数据 | 恶意攻击/数据不存在 | 布隆过滤器、缓存空值 |
+| **缓存击穿** | 热点数据过期瞬间 | 单个热点 key 过期 | 互斥锁、逻辑过期 |
+| **缓存雪崩** | 大量请求打到数据库 | 大量 key 同时过期/Redis 宕机 | 随机过期时间、多级缓存、熔断降级 |
+
+* * *
+
+## 五、面试回答模板
+
+> "缓存穿透是指查询不存在的数据，绕过缓存直接打到数据库，解决方案是用布隆过滤器或缓存空值。缓存击穿是热点数据过期瞬间大量请求打到数据库，可以用互斥锁或逻辑过期解决。缓存雪崩是大量缓存同时过期或 Redis 宕机，需要随机过期时间、多级缓存和熔断降级来防护。"
+
+* * *
+
+## 总结
+
+Redis 三大缓存问题，核心都是**如何保护数据库**：
+
+✅ **穿透**：布隆过滤器拦截 + 缓存空值 ✅ **击穿**：互斥锁串行化 + 逻辑过期 ✅ **雪崩**：随机过期 + 多级缓存 + 熔断降级
+
+生产环境建议组合拳：**布隆过滤器 + 互斥锁 + 随机过期 + 多级缓存**。
+
+* * *
+
+> 💡 **面试锦囊**：遇到 Redis 问题，先判断是穿透、击穿还是雪崩，然后给出对应的解决方案。最好结合实际项目经验，比如"我们之前用布隆过滤器解决了爬虫攻击导致的缓存穿透问题"。
+
+> 下一期：《我用 AI 写代码，效率提升了 300%》，敬请期待！🚀

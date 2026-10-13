@@ -1,0 +1,1020 @@
+---
+title: "设计模式在业务开发中的实战指南"
+pubDate: 2026-04-02
+category: practice
+tags: []
+summary: "写在前面 本文从真正的企业级业务场景出发，以一个复杂的多模式、多价格算费系统为例，深入探讨设计模式在实际业务系统中的应用。 一、真实业务场景：通信运营商计费系统 1.1 业务背景 某通信运营商的计费系"
+draft: false
+juejin:
+  id: "7623747758766964779"
+  url: https://juejin.cn/post/7623747758766964779
+  views: 148
+  likes: 1
+
+---
+## 写在前面
+
+本文从真正的企业级业务场景出发，以一个复杂的多模式、多价格算费系统为例，深入探讨设计模式在实际业务系统中的应用。
+
+* * *
+
+## 一、真实业务场景：通信运营商计费系统
+
+### 1.1 业务背景
+
+某通信运营商的计费系统需要支持：
+
+1.  **多产品形态**：月套餐、流量包、叠加包、季卡、年卡
+2.  **多计费模式**：按量计费、包月计费、分段计费、阶梯计费
+3.  **多价格体系**：标准价、促销价、会员价、渠道价、集团客户价
+4.  **多优惠叠加**：套餐优惠、活动优惠、积分抵扣、优惠券、等级折扣
+5.  **实时性要求**：实时计费、批量出账、周期账单
+6.  **规则变化频繁**：营销活动、套餐调整、政策变化
+
+这种复杂度是真实业务系统的常态，也是设计模式发挥价值的舞台。
+
+* * *
+
+## 二、从问题出发：计费系统的架构挑战
+
+### 2.1 传统方式的困境
+
+如果我们不使用设计模式，可能会写出这样的代码：
+
+```vbnet
+public class BillingService {
+    public BigDecimal calculate(Order order) {
+        BigDecimal result = order.getBasePrice();
+        
+        // 各种if-else嵌套
+        if (order.getProductType() == "MONTHLY") {
+            if (order.getUserLevel() == "VIP") {
+                result = result.multiply(new BigDecimal("0.8"));
+            }
+            if (order.hasCoupon()) {
+                result = result.subtract(order.getCouponAmount());
+            }
+            // ... 更多if-else
+        } else if (order.getProductType() == "PACKAGE") {
+            // 又一套逻辑
+        }
+        // 1000行以后...
+        
+        return result;
+    }
+}
+```
+
+这种代码的问题：
+
+-   **难以维护**：每次新增产品类型或优惠，都需要修改核心服务
+-   **容易出错**：复杂的条件判断容易遗漏边界情况
+-   **无法测试**：逻辑耦合，难以单元测试
+-   **难以扩展**：新增功能牵一发动全身
+
+### 2.2 架构设计目标
+
+面对这样的复杂业务，我们需要：
+
+1.  **开闭原则**：新增产品/优惠类型，无需修改核心计费逻辑
+2.  **单一职责**：每种计费规则独立处理，互不干扰
+3.  **可配置化**：计费规则可动态调整，无需重启服务
+4.  **可观测**：计费过程可追踪，问题可定位
+5.  **高性能**：支持高并发实时计费
+
+* * *
+
+## 三、设计模式组合应用
+
+### 3.1 整体架构图
+
+```scss
+┌─────────────────────────────────────────────────────────────────────────┐
+│                           计费网关 (Facade)                              │
+│  - 入口协调                                                               │
+│  - 结果汇总                                                               │
+│  - 异常处理                                                               │
+└─────────────────────────────────┬───────────────────────────────────────┘
+                                  │
+        ┌─────────────────────────┼─────────────────────────┐
+        ↓                         ↓                         ↓
+┌───────────────────┐   ┌───────────────────┐   ┌───────────────────────┐
+│   产品计费 chain  │   │   价格策略 strategy│   │   优惠装饰器 Decorator│
+│                   │   │                   │   │                       │
+│ 月套餐处理器       │   │ 标准价格策略       │   │ 基础优惠装饰器         │
+│ 流量包处理器       │   │ 促销价格策略       │   │ 会员折扣装饰器         │
+│ 季卡处理器         │   │ 会员价格策略       │   │ 优惠券装饰器           │
+│ ...               │   │ 渠道价格策略       │   │ 积分抵扣装饰器         │
+│                   │   │ 集团客户价格策略   │   │ 活动叠加装饰器         │
+└───────────────────┘   └───────────────────┘   └───────────────────────┘
+        │                         │                         │
+        └─────────────────────────┼─────────────────────────┘
+                                  ↓
+                    ┌─────────────────────────┐
+                    │    计费引擎 (Engine)     │
+                    │   - 结果聚合             │
+                    │   - 规则调度             │
+                    │   - 上下文传递           │
+                    └─────────────────────────┘
+```
+
+### 3.2 责任链模式：产品计费处理
+
+**业务场景**：不同产品类型有不同的计费逻辑
+
+```css
+┌─────────────────────────────────────────────────────────────────┐
+│                    ProductBillingChain                           │
+│                                                                  │
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐     │
+│  │MonthlyPackage│───▶│ FlowPackage  │───▶│ QuarterCard  │───▶  │
+│  │  Handler     │    │   Handler    │    │   Handler    │      │
+│  │              │    │              │    │              │      │
+│  │-保底消费     │    │-超出计费     │    │-有效期内     │      │
+│  │-套餐外资费   │    │-达量降速     │    │-提前续订     │      │
+│  └──────────────┘    └──────────────┘    └──────────────┘      │
+│         │                  │                  │                │
+│         └──────────────────┼──────────────────┘                │
+│                            ↓                                     │
+│                   ┌─────────────────┐                           │
+│                   │ BillingResult   │                           │
+│                   │ - totalAmount   │                           │
+│                   │ - details[]     │                           │
+│                   │ - metadata      │                           │
+│                   └─────────────────┘                           │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**关键难点**：
+
+1.  **链的编排顺序**：月套餐和流量包的计费顺序会影响结果
+2.  **共享上下文**：各处理器需要共享计费上下文（如用户信息、订单信息）
+3.  **部分处理**：某个处理器可能只处理部分场景，需要支持跳过
+4.  **结果合并**：多个处理器的结果需要正确合并
+
+**错误使用方式**：
+
+```scala
+// ❌ 错误：直接在handler中处理所有逻辑
+public class ProductHandler extends BillingHandler {
+    @Override
+    protected BillingResult doBilling(BillingContext context) {
+        // 这里写了1000行...
+        // 违反了单一职责原则
+    }
+}
+```
+
+**正确方式**：
+
+```scss
+// ✅ 正确：每个handler只处理特定产品类型
+@Component
+@HandlerType(ProductType.MONTHLY_PACKAGE)
+public class MonthlyPackageHandler extends ProductBillingHandler {
+    
+    @Override
+    protected boolean canHandle(BillingContext context) {
+        // 支持多产品类型的判断
+        return context.getProduct().getType() == ProductType.MONTHLY_PACKAGE
+            && context.getProduct().getSubType().contains("5G");
+    }
+    
+    @Override
+    protected BillingResult doBilling(BillingContext context) {
+        Product product = context.getProduct();
+        
+        // 1. 获取保底消费
+        BigDecimal minimumFee = calculateMinimumFee(product, context);
+        
+        // 2. 计算套餐内权益
+        List<Benefit> benefits = calculateBenefits(product);
+        
+        // 3. 计算超出套餐部分
+        BigDecimal overageFee = calculateOverage(product, context);
+        
+        // 4. 合并结果
+        return BillingResult.builder()
+            .minimumFee(minimumFee)
+            .benefits(benefits)
+            .overageFee(overageFee)
+            .total(minimumFee.add(overageFee))
+            .build();
+    }
+    
+    // 业务逻辑分解
+    private BigDecimal calculateMinimumFee(Product product, BillingContext context) {
+        // 具体实现
+    }
+    
+    private List<Benefit> calculateBenefits(Product product) {
+        // 具体实现
+    }
+    
+    private BigDecimal calculateOverage(Product product, BillingContext context) {
+        // 具体实现
+    }
+}
+```
+
+### 3.3 策略模式：多价格体系
+
+**业务场景**：同一产品在不同场景下有不同的价格
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     PriceStrategy Context                        │
+│                                                                  │
+│  用户场景                 策略选择                               │
+│  ┌─────────┐           ┌─────────────────┐                    │
+│  │ 标准用户  │──────────▶│ StandardPrice   │                    │
+│  │ VIP会员  │──────────▶│ VipPriceStrategy │                    │
+│  │ 渠道用户  │──────────▶│ ChannelStrategy  │                   │
+│  │ 集团客户  │──────────▶│ CorporateStrategy│                   │
+│  │ 促销期   │──────────▶│ PromotionStrategy│                   │
+│  │ 新用户   │──────────▶│ NewUserStrategy   │                   │
+│  └─────────┘           └─────────────────┘                    │
+│                                                                  │
+│  优先级：集团客户 > 促销 > VIP > 渠道 > 新用户 > 标准            │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**关键难点**：
+
+1.  **策略优先级**：多个策略同时生效时的优先级判断
+2.  **策略组合**：某些场景需要多个策略组合计算
+3.  **策略降级**：某个策略不可用时的降级处理
+4.  **策略缓存**：高频调用的策略需要缓存提升性能
+5.  **策略配置化**：策略的选择规则需要可配置
+
+**错误使用方式**：
+
+```scss
+// ❌ 错误：直接在Service中写if-else判断策略
+public BigDecimal getPrice(Product product, User user) {
+    if (user.isCorporate()) {
+        return getCorporatePrice(product, user);
+    } else if (user.isVip()) {
+        return getVipPrice(product, user);
+    } else if (user.isChannel()) {
+        return getChannelPrice(product, user);
+    } else if (product.isPromotion()) {
+        return getPromotionPrice(product, user);
+    }
+    // 每次新增策略都要改这里
+    return getStandardPrice(product);
+}
+```
+
+**正确方式**：
+
+```scss
+// ✅ 正确：策略模式 + 策略工厂 + 优先级
+
+// 1. 定义策略接口
+public interface PriceStrategy {
+    /**
+     * 判断是否适用此策略
+     */
+    boolean canApply(Product product, User user, BillingContext context);
+    
+    /**
+     * 计算价格
+     */
+    BigDecimal calculatePrice(Product product, BigDecimal basePrice, 
+                             User user, BillingContext context);
+    
+    /**
+     * 策略优先级（数字越小优先级越高）
+     */
+    int getPriority();
+    
+    /**
+     * 策略名称（用于日志和排查）
+     */
+    String getName();
+}
+
+// 2. 实现各种策略
+@Component
+@StrategyOrder(1)  // 最高优先级
+public class CorporatePriceStrategy implements PriceStrategy {
+    
+    @Override
+    public boolean canApply(Product product, User user, BillingContext context) {
+        return user.getCorporateInfo() != null 
+            && user.getCorporateInfo().hasContract();
+    }
+    
+    @Override
+    public BigDecimal calculatePrice(Product product, BigDecimal basePrice,
+                                     User user, BillingContext context) {
+        // 集团客户专属折扣
+        BigDecimal discount = user.getCorporateInfo().getDiscount();
+        return basePrice.multiply(discount)
+            .subtract(user.getCorporateInfo().getMonthlySubsidy());
+    }
+    
+    @Override
+    public int getPriority() {
+        return 1;
+    }
+    
+    @Override
+    public String getName() {
+        return "CORPORATE";
+    }
+}
+
+@Component
+@StrategyOrder(2)
+public class PromotionPriceStrategy implements PriceStrategy {
+    
+    @Override
+    public boolean canApply(Product product, User user, BillingContext context) {
+        Promotion promotion = product.getActivePromotion();
+        return promotion != null 
+            && promotion.isValid()
+            && promotion.matchTarget(user);
+    }
+    
+    @Override
+    public BigDecimal calculatePrice(Product product, BigDecimal basePrice,
+                                     User user, BillingContext context) {
+        Promotion promotion = product.getActivePromotion();
+        
+        // 促销价的几种计算方式
+        switch (promotion.getDiscountType()) {
+            case PERCENTAGE:
+                return basePrice.multiply(promotion.getDiscount());
+            case FIXED_AMOUNT:
+                return basePrice.subtract(promotion.getDiscount());
+            case GROUP_BUY:
+                return calculateGroupBuyPrice(product, basePrice, user);
+            default:
+                return basePrice;
+        }
+    }
+    
+    @Override
+    public int getPriority() {
+        return 2;
+    }
+}
+
+// 3. 策略调度器（核心）
+@Component
+public class PriceStrategyDispatcher {
+    
+    private final List<PriceStrategy> strategies;
+    private final Map<String, PriceStrategy> strategyCache = new ConcurrentHashMap<>();
+    
+    @Autowired
+    public PriceStrategyDispatcher(List<PriceStrategy> strategies) {
+        // 按优先级排序
+        this.strategies = strategies.stream()
+            .sorted(Comparator.comparingInt(PriceStrategy::getPriority))
+            .collect(Collectors.toList());
+    }
+    
+    /**
+     * 获取适用的策略
+     * 注意：可能返回多个策略（策略组合场景）
+     */
+    public List<PriceStrategy> getApplicableStrategies(Product product, 
+                                                       User user, 
+                                                       BillingContext context) {
+        // 先从缓存获取
+        String cacheKey = buildCacheKey(product, user);
+        List<PriceStrategy> cached = strategyCache.get(cacheKey);
+        if (cached != null) {
+            return cached;
+        }
+        
+        // 查找所有适用的策略
+        List<PriceStrategy> applicable = strategies.stream()
+            .filter(s -> s.canApply(product, user, context))
+            .collect(Collectors.toList());
+        
+        // 缓存结果
+        if (!applicable.isEmpty()) {
+            strategyCache.put(cacheKey, applicable);
+        }
+        
+        return applicable;
+    }
+    
+    /**
+     * 计算最终价格（策略组合）
+     */
+    public BigDecimal calculateFinalPrice(Product product, BigDecimal basePrice,
+                                           User user, BillingContext context) {
+        List<PriceStrategy> strategies = getApplicableStrategies(product, user, context);
+        
+        if (strategies.isEmpty()) {
+            return basePrice;
+        }
+        
+        // 策略组合计算
+        BigDecimal currentPrice = basePrice;
+        List<PriceDetail> details = new ArrayList<>();
+        
+        for (PriceStrategy strategy : strategies) {
+            BigDecimal originalPrice = currentPrice;
+            currentPrice = strategy.calculatePrice(product, currentPrice, user, context);
+            
+            details.add(PriceDetail.builder()
+                .strategyName(strategy.getName())
+                .originalPrice(originalPrice)
+                .finalPrice(currentPrice)
+                .discount(originalPrice.subtract(currentPrice))
+                .build());
+        }
+        
+        // 记录计费明细到上下文
+        context.setPriceDetails(details);
+        
+        return currentPrice;
+    }
+    
+    private String buildCacheKey(Product product, User user) {
+        return product.getId() + ":" + user.getId() + ":" 
+            + product.getVersion();  // 产品版本变化时清除缓存
+    }
+}
+```
+
+### 3.4 装饰器模式：优惠叠加计算
+
+**业务场景**：多种优惠同时生效，需要正确叠加
+
+```scss
+┌─────────────────────────────────────────────────────────────────┐
+│                   DiscountDecorator Chain                        │
+│                                                                  │
+│  BasePriceCalculator                                            │
+│        │                                                        │
+│        ▼                                                        │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │              MemberDiscountDecorator                    │    │
+│  │  VIP会员 9折 / 白金会员 8折 / 钻石会员 7折                │    │
+│  └─────────────────────────────────────────────────────────┘    │
+│        │                                                        │
+│        ▼                                                        │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │              CouponDecorator                             │    │
+│  │  满100减10 / 满200减30 / 限时优惠券                       │    │
+│  └─────────────────────────────────────────────────────────┘    │
+│        │                                                        │
+│        ▼                                                        │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │              PointsDeductionDecorator                    │    │
+│  │  100积分抵扣 1 元                                         │    │
+│  └─────────────────────────────────────────────────────────┘    │
+│        │                                                        │
+│        ▼                                                        │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │              ActivityDecorator                           │    │
+│  │  新年活动 / 618活动 / 双11活动                           │    │
+│  └─────────────────────────────────────────────────────────┘    │
+│        │                                                        │
+│        ▼                                                        │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │              FinalPriceCalculator (结果)                │    │
+│  └─────────────────────────────────────────────────────────┘    │
+│                                                                  │
+│  计算公式：                                                       │
+│  最终价格 = 基础价 × 会员折扣 - 优惠券 - 积分抵扣 - 活动优惠      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**关键难点**：
+
+1.  **叠加顺序**：不同顺序可能导致不同结果（如先打折后减钱 vs 先减钱后打折）
+2.  **互斥** **规则**：某些优惠不能同时享用（如优惠券和活动不能叠加）
+3.  **上限控制**：每种优惠可能有使用上限（如优惠券最高减50）
+4.  **门槛限制**：优惠可能有最低消费门槛
+5.  **实时计算**：优惠计算需要高性能，支持高并发
+
+**复杂业务规则示例**：
+
+```scss
+// ✅ 正确的装饰器实现：支持互斥、门槛、上限控制
+
+// 1. 优惠上下文
+public class DiscountContext {
+    private BigDecimal currentPrice;      // 当前价格
+    private BigDecimal originalPrice;     // 原始价格
+    private List<DiscountDetail> details; // 优惠明细
+    private Map<String, Object> params;   // 额外参数
+    
+    // 优惠叠加规则
+    private DiscountRule rule;
+    
+    public DiscountContext(BigDecimal originalPrice, DiscountRule rule) {
+        this.originalPrice = originalPrice;
+        this.currentPrice = originalPrice;
+        this.details = new ArrayList<>();
+        this.rule = rule;
+        this.params = new HashMap<>();
+    }
+    
+    // 检查是否可以叠加
+    public boolean canStackWith(DiscountType type) {
+        return rule.canStack(getAppliedDiscountTypes(), type);
+    }
+    
+    // 检查门槛
+    public boolean meetThreshold(BigDecimal threshold) {
+        return currentPrice.compareTo(threshold) >= 0;
+    }
+    
+    // 检查上限
+    public boolean underLimit(BigDecimal limit, BigDecimal discount) {
+        BigDecimal totalDiscount = getTotalDiscount();
+        return totalDiscount.add(discount).compareTo(limit) <= 0;
+    }
+}
+
+// 2. 抽象装饰器
+public abstract class DiscountDecorator implements PriceCalculator {
+    protected PriceCalculator wrapped;
+    protected DiscountContext context;
+    
+    public DiscountDecorator(PriceCalculator calculator, DiscountContext context) {
+        this.wrapped = calculator;
+        this.context = context;
+    }
+    
+    @Override
+    public BigDecimal calculate(Order order) {
+        BigDecimal price = wrapped.calculate(order);
+        return applyDiscount(price, order);
+    }
+    
+    protected abstract BigDecimal applyDiscount(BigDecimal price, Order order);
+}
+
+// 3. 会员折扣装饰器
+public class MemberDiscountDecorator extends DiscountDecorator {
+    
+    public MemberDiscountDecorator(PriceCalculator calculator, 
+                                   DiscountContext context,
+                                   MemberLevel level) {
+        super(calculator, context);
+    }
+    
+    @Override
+    protected BigDecimal applyDiscount(BigDecimal price, Order order) {
+        MemberLevel level = order.getUser().getMemberLevel();
+        
+        // 检查是否适用会员折扣
+        if (!canApplyMemberDiscount(level, context)) {
+            return price;
+        }
+        
+        // 计算折扣
+        BigDecimal discountRate = getDiscountRate(level);
+        BigDecimal discount = price.multiply(BigDecimal.ONE.subtract(discountRate));
+        
+        // 检查折扣上限
+        BigDecimal maxDiscount = getMaxDiscount(level);
+        if (discount.compareTo(maxDiscount) > 0) {
+            discount = maxDiscount;
+        }
+        
+        BigDecimal finalPrice = price.subtract(discount);
+        
+        // 记录优惠明细
+        context.addDetail(DiscountDetail.builder()
+            .type(DiscountType.MEMBER)
+            .name(level.getName() + "会员折扣")
+            .originalPrice(price)
+            .finalPrice(finalPrice)
+            .discount(discount)
+            .build());
+        
+        return finalPrice;
+    }
+    
+    private boolean canApplyMemberDiscount(MemberLevel level, DiscountContext context) {
+        // 业务规则：会员折扣不与某些活动叠加
+        return context.canStackWith(DiscountType.MEMBER);
+    }
+}
+
+// 4. 优惠券装饰器
+public class CouponDecorator extends DiscountDecorator {
+    
+    public CouponDecorator(PriceCalculator calculator, 
+                          DiscountContext context,
+                          Coupon coupon) {
+        super(calculator, context);
+    }
+    
+    @Override
+    protected BigDecimal applyDiscount(BigDecimal price, Order order) {
+        Coupon coupon = order.getCoupon();
+        
+        // 检查优惠券是否可用
+        if (coupon == null || !coupon.isValid()) {
+            return price;
+        }
+        
+        // 检查门槛
+        if (!context.meetThreshold(coupon.getThreshold())) {
+            return price;
+        }
+        
+        // 检查互斥
+        if (!context.canStackWith(DiscountType.COUPON)) {
+            return price;
+        }
+        
+        // 计算优惠
+        BigDecimal discount;
+        switch (coupon.getType()) {
+            case PERCENTAGE:
+                discount = price.multiply(coupon.getDiscountRate());
+                break;
+            case FIXED_AMOUNT:
+                discount = coupon.getAmount();
+                break;
+            default:
+                discount = BigDecimal.ZERO;
+        }
+        
+        // 检查上限
+        if (!context.underLimit(coupon.getMaxDiscount(), discount)) {
+            discount = coupon.getMaxDiscount();
+        }
+        
+        BigDecimal finalPrice = price.subtract(discount);
+        
+        context.addDetail(DiscountDetail.builder()
+            .type(DiscountType.COUPON)
+            .name(coupon.getName())
+            .originalPrice(price)
+            .finalPrice(finalPrice)
+            .discount(discount)
+            .couponId(coupon.getId())
+            .build());
+        
+        return finalPrice;
+    }
+}
+
+// 5. 使用示例
+public class OrderService {
+    
+    @Autowired
+    private PriceStrategyDispatcher priceStrategyDispatcher;
+    
+    public BigDecimal calculateOrderPrice(Order order) {
+        // 1. 获取基础价格（通过策略）
+        BigDecimal basePrice = priceStrategyDispatcher.calculateFinalPrice(
+            order.getProduct(), 
+            order.getProduct().getPrice(),
+            order.getUser(),
+            createContext(order)
+        );
+        
+        // 2. 构建优惠计算链
+        DiscountRule rule = getDiscountRule(order);
+        DiscountContext discountContext = new DiscountContext(basePrice, rule);
+        
+        PriceCalculator calculator = new BasePriceCalculator();
+        
+        // 3. 添加会员折扣
+        if (order.getUser().getMemberLevel() != null) {
+            calculator = new MemberDiscountDecorator(
+                calculator, 
+                discountContext,
+                order.getUser().getMemberLevel()
+            );
+        }
+        
+        // 4. 添加优惠券
+        if (order.getCoupon() != null) {
+            calculator = new CouponDecorator(calculator, discountContext, order.getCoupon());
+        }
+        
+        // 5. 添加积分抵扣
+        if (order.getPoints() != null && order.getPoints() > 0) {
+            calculator = new PointsDeductionDecorator(calculator, discountContext, order.getPoints());
+        }
+        
+        // 6. 添加活动优惠
+        List<Activity> activities = getApplicableActivities(order);
+        for (Activity activity : activities) {
+            calculator = new ActivityDecorator(calculator, discountContext, activity);
+        }
+        
+        // 7. 计算最终价格
+        return calculator.calculate(order);
+    }
+}
+```
+
+### 3.5 观察者模式：计费事件处理
+
+**业务场景**：计费完成后需要触发多个后续动作
+
+```vbnet
+┌─────────────────────────────────────────────────────────────────┐
+│                      Billing Event Flow                          │
+│                                                                  │
+│  ┌──────────────┐                                                │
+│  │  Order Paid  │  计费完成事件                                   │
+│  └──────┬───────┘                                                │
+│         │                                                        │
+│         ▼                                                        │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │                    Event Bus                               │   │
+│  │  - 事件分发                                                │   │
+│  │  - 顺序控制                                                │   │
+│  │  - 异常处理                                                │   │
+│  └─────────────────────────┬────────────────────────────────┘   │
+│                            │                                      │
+│      ┌──────────┬──────────┼──────────┬──────────┐              │
+│      ▼          ▼          ▼          ▼          ▼              │
+│  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐         │
+│  │ 库存   │ │ 积分   │ │ 消息   │ │ 日志   │ │ 发票   │         │
+│  │ Observer│ │Observer│ │Observer│ │Observer│ │Observer│         │
+│  └────────┘ └────────┘ └────────┘ └────────┘ └────────┘         │
+│                                                                  │
+│  关键点：                                                         │
+│  1. 事件顺序：库存锁定 → 积分发放 → 消息通知 → 日志记录           │
+│  2. 异步处理：消息通知可以异步，不阻塞主流程                       │
+│  3. 事务一致性：计费成功但某个观察者失败如何处理                   │
+│  4. 幂等性：事件重复消费如何保证幂等                               │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**关键难点**：
+
+1.  **事件顺序**：某些观察者有依赖关系，需要保证执行顺序
+2.  **事务一致性**：计费成功但观察者失败如何处理
+3.  **幂等性**：消息重试导致的重复处理
+4.  **性能**：高并发下的事件处理性能
+5.  **监控**：事件处理的追踪和异常定位
+
+```typescript
+// 1. 计费事件定义
+public class BillingEvent {
+    private String eventId;           // 事件ID（用于幂等）
+    private String orderId;
+    private BigDecimal amount;
+    private BillingStatus status;
+    private LocalDateTime timestamp;
+    private Map<String, Object> metadata;
+    
+    // 构造函数、getter省略
+}
+
+// 2. 观察者接口
+public interface BillingEventObserver {
+    
+    /**
+     * 观察者优先级（数字越小越先执行）
+     */
+    int getOrder();
+    
+    /**
+     * 是否异步执行
+     */
+    default boolean isAsync() {
+        return false;
+    }
+    
+    /**
+     * 处理事件
+     */
+    void onBillingEvent(BillingEvent event);
+    
+    /**
+     * 事件类型过滤
+     */
+    default boolean canHandle(BillingEvent event) {
+        return true;
+    }
+}
+
+// 3. 实现各种观察者
+
+@Component
+@ObserverOrder(1)
+public class InventoryObserver implements BillingEventObserver {
+    
+    @Override
+    public int getOrder() {
+        return 1;  // 最先执行
+    }
+    
+    @Override
+    public void onBillingEvent(BillingEvent event) {
+        if (event.getStatus() == BillingStatus.SUCCESS) {
+            // 锁定库存
+            lockInventory(event.getOrderId());
+        } else if (event.getStatus() == BillingStatus.FAILED) {
+            // 释放库存
+            releaseInventory(event.getOrderId());
+        }
+    }
+}
+
+@Component
+@ObserverOrder(2)
+public class PointsObserver implements BillingEventObserver {
+    
+    @Override
+    public int getOrder() {
+        return 2;
+    }
+    
+    @Override
+    public void onBillingEvent(BillingEvent event) {
+        if (event.getStatus() == BillingStatus.SUCCESS) {
+            // 发放积分
+            BigDecimal points = calculatePoints(event.getAmount());
+            givePoints(event.getOrderId(), points);
+        }
+    }
+    
+    private BigDecimal calculatePoints(BigDecimal amount) {
+        // 积分规则：1元=1积分，会员额外加成
+        return amount;
+    }
+}
+
+@Component
+@ObserverOrder(3)
+public class NotificationObserver implements BillingEventObserver {
+    
+    @Override
+    public int getOrder() {
+        return 3;
+    }
+    
+    @Override
+    public boolean isAsync() {
+        return true;  // 异步执行，不阻塞主流程
+    }
+    
+    @Override
+    public void onBillingEvent(BillingEvent event) {
+        // 发送通知
+        sendNotification(event);
+    }
+}
+
+// 4. 事件分发器（核心）
+@Component
+public class BillingEventDispatcher {
+    
+    private final Map<Integer, List<BillingEventObserver>> observers = new ConcurrentHashMap<>();
+    private final Map<String, String> processedEvents = new ConcurrentHashMap<>(); // 幂等控制
+    
+    @Autowired
+    public BillingEventDispatcher(List<BillingEventObserver> observerList) {
+        // 按优先级分组
+        observerList.stream()
+            .sorted(Comparator.comparingInt(BillingEventObserver::getOrder))
+            .forEach(observer -> {
+                observers.computeIfAbsent(
+                    observer.getOrder(), 
+                    k -> new ArrayList<>()
+                ).add(observer);
+            });
+    }
+    
+    /**
+     * 分发事件
+     */
+    public void dispatch(BillingEvent event) {
+        // 幂等检查
+        if (!checkIdempotence(event.getEventId())) {
+            log.warn("Event already processed: {}", event.getEventId());
+            return;
+        }
+        
+        // 按优先级顺序执行
+        for (int order : observers.keySet().stream()
+                .sorted()
+                .collect(Collectors.toList())) {
+            
+            List<BillingEventObserver> observerList = observers.get(order);
+            
+            for (BillingEventObserver observer : observerList) {
+                if (!observer.canHandle(event)) {
+                    continue;
+                }
+                
+                try {
+                    if (observer.isAsync()) {
+                        // 异步执行
+                        CompletableFuture.runAsync(() -> 
+                            safeExecute(observer, event)
+                        );
+                    } else {
+                        // 同步执行
+                        safeExecute(observer, event);
+                    }
+                } catch (Exception e) {
+                    log.error("Observer {} failed: {}", 
+                        observer.getClass().getName(), e.getMessage());
+                    // 根据业务决定是否继续
+                    handleObserverFailure(observer, event, e);
+                }
+            }
+        }
+    }
+    
+    private void safeExecute(BillingEventObserver observer, BillingEvent event) {
+        try {
+            observer.onBillingEvent(event);
+        } catch (Exception e) {
+            log.error("Error executing observer: {}", e.getMessage(), e);
+            throw e;
+        }
+    }
+    
+    private boolean checkIdempotence(String eventId) {
+        // 简化实现：实际应使用Redis
+        return processedEvents.putIfAbsent(eventId, "PROCESSED") == null;
+    }
+    
+    private void handleObserverFailure(BillingEventObserver observer, 
+                                      BillingEvent event, Exception e) {
+        // 记录失败事件，后续补偿
+        saveFailedEvent(observer, event, e);
+    }
+}
+```
+
+* * *
+
+## 四、模式组合与架构演进
+
+### 4.1 模式协同关系
+
+```sql
+┌─────────────────────────────────────────────────────────────────┐
+│                      模式协作图                                   │
+│                                                                  │
+│  ┌─────────────┐                                                  │
+│  │   Facade    │  计费网关：统一入口                              │
+│  └──────┬──────┘                                                  │
+│         │                                                          │
+│         ├──────────────────┬──────────────────┐                  │
+│         ▼                  ▼                  ▼                  │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐          │
+│  │ Chain of    │    │  Strategy   │    │ Decorator   │          │
+│  │ Responsibility│   │   Pattern   │    │   Pattern   │          │
+│  │              │    │             │    │             │          │
+│  │ 产品计费处理 │    │ 价格策略选择│    │ 优惠叠加计算│          │
+│  └──────┬──────┘    └──────┬──────┘    └──────┬──────┘          │
+│         │                  │                  │                  │
+│         └──────────────────┼──────────────────┘                  │
+│                            ▼                                     │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │                   Observer Pattern                       │    │
+│  │                                                           │    │
+│  │  计费完成后的后续处理：库存、积分、消息、通知等           │    │
+│  └─────────────────────────────────────────────────────────┘    │
+│                                                                  │
+│  工厂模式：创建各种策略实例、处理器实例                            │
+│  单例模式：策略分发器、事件分发器                                  │
+│  模板方法：处理器基类定义处理骨架                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 4.2 架构演进建议
+
+| 阶段 | 架构形态 | 适用场景 | 模式选择 |
+| --- | --- | --- | --- |
+| 初期 | 单体应用 | 业务简单，并发低 | 策略+装饰器 |
+| 中期 | 模块化 | 业务复杂，多团队 | 责任链+观察者 |
+| 后期 | 微服务 | 超高并发，多系统 | 事件驱动+消息队列 |
+
+* * *
+
+## 五、总结
+
+### 5.1 关键设计原则
+
+1.  **识别变化点**：先识别业务中频繁变化的部分
+2.  **模式组合**：复杂业务往往需要多种模式组合
+3.  **渐进式演进**：从简单开始，根据需要引入模式
+4.  **可测试性**：设计时要考虑测试便利性
+
+### 5.2 反模式警示
+
+-   ❌ 过度设计：简单业务不要强行用模式
+-   ❌ 为用而用：不要为了"高大上"而套模式
+-   ❌ 过度封装：保持代码可读性
+-   ❌ 忽视性能：模式有开销，要评估
+
+* * *
+
+_本文从技术架构角度，深入分析了设计模式在复杂计费系统中的应用。_

@@ -1,0 +1,428 @@
+---
+title: "从 0 到 1 搭建高并发系统：架构设计全流程"
+pubDate: 2026-03-19
+category: backend
+tags: []
+summary: "前言 高并发系统是每个后端开发者的必修课。 这篇文章以一个真实的电商秒杀系统为例，带你从 0 到 1 完整搭建一个高并发系统。 一、需求分析 1.1 业务场景 1.2 技术挑战 挑战 具体问题 高并发"
+draft: false
+juejin:
+  id: "7618236045017579556"
+  url: https://juejin.cn/post/7618236045017579556
+  views: 187
+  likes: 0
+
+---
+## 前言
+
+高并发系统是每个后端开发者的必修课。
+
+这篇文章以一个真实的电商秒杀系统为例，带你从 0 到 1 完整搭建一个高并发系统。
+
+* * *
+
+## 一、需求分析
+
+### 1.1 业务场景
+
+```diff
+秒杀活动：
+- 商品数量有限（1000件）
+- 用户量大（10万人参与）
+- 时间集中（1小时内）
+- 高并发（峰值 1万 QPS）
+```
+
+### 1.2 技术挑战
+
+| 挑战 | 具体问题 |
+| --- | --- |
+| **高并发** | 1万 QPS，数据库扛不住 |
+| **高可用** | 服务不能挂 |
+| **数据一致性** | 不能超卖、少卖 |
+| **用户体验** | 不能卡顿、报错 |
+
+* * *
+
+## 二、架构演进
+
+### 2.1 第一阶段：单体架构
+
+```diff
+┌─────────────────────────────────────┐
+│         应用服务器                   │
+│  ┌─────────────────────────────┐   │
+│  │ 用户服务、商品服务、订单服务  │   │
+│  └─────────────────────────────┘   │
+│              ↓                      │
+│         ┌─────────┐                 │
+│         │  MySQL  │                 │
+│         └─────────┘                 │
+└─────────────────────────────────────┘
+
+问题：
+- 数据库成为瓶颈
+- 无法水平扩展
+```
+
+### 2.2 第二阶段：读写分离 + 缓存
+
+```markdown
+            ┌─────────┐
+            │  Redis  │ ← 热点数据缓存
+            └────┬────┘
+                 ↓
+┌─────────────────────────────────────┐
+│         应用服务器（集群）            │
+└─────────────────────────────────────┘
+        ↓                   ↓
+  ┌──────────┐       ┌──────────┐
+  │ Master DB│──────→│ Slave DB │
+  └──────────┘       └──────────┘
+   写操作              读操作
+
+改进：
+- 读走缓存和从库
+- 写走主库
+
+问题：
+- 热点数据写入压力大
+- 缓存穿透、击穿、雪崩
+```
+
+### 2.3 第三阶段：微服务 + 分库分表
+
+```markdown
+                    ┌──────────────┐
+                    │   Nginx      │
+                    │  负载均衡    │
+                    └──────┬───────┘
+                           ↓
+                    ┌──────────────┐
+                    │   Gateway    │
+                    │   API网关    │
+                    └──────┬───────┘
+           ┌───────────────┼───────────────┐
+           ↓               ↓               ↓
+    ┌────────────┐  ┌────────────┐  ┌────────────┐
+    │ 用户服务   │  │ 商品服务   │  │ 订单服务   │
+    └─────┬──────┘  └─────┬──────┘  └─────┬──────┘
+          ↓               ↓               ↓
+    ┌──────────┐   ┌──────────┐   ┌──────────┐
+    │  用户库  │   │  商品库  │   │  订单库  │
+    └──────────┘   └──────────┘   └──────────┘
+
+改进：
+- 服务拆分，独立扩展
+- 分库分表，分散压力
+
+问题：
+- 分布式事务
+- 服务间调用复杂
+```
+
+### 2.4 第四阶段：最终架构
+
+```markdown
+用户 → CDN → Nginx → Gateway → 服务集群 → 缓存/队列/数据库
+              ↑              ↑
+         静态资源       消息队列削峰
+
+完整架构：
+┌──────────────────────────────────────────────────────┐
+│                      CDN（静态资源）                   │
+└──────────────────────────────────────────────────────┘
+                           ↓
+┌──────────────────────────────────────────────────────┐
+│                    Nginx（限流 + 负载）                │
+└──────────────────────────────────────────────────────┘
+                           ↓
+┌──────────────────────────────────────────────────────┐
+│                  Gateway（网关 + 熔断）                │
+└──────────────────────────────────────────────────────┘
+                           ↓
+┌──────────────────────────────────────────────────────┐
+│                      服务集群                         │
+│   ┌─────────┐ ┌─────────┐ ┌─────────┐               │
+│   │商品服务  │ │订单服务  │ │支付服务  │               │
+│   └────┬────┘ └────┬────┘ └────┬────┘               │
+└────────┼───────────┼───────────┼─────────────────────┘
+         ↓           ↓           ↓
+┌──────────────────────────────────────────────────────┐
+│  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐    │
+│  │ Redis   │ │ MQ      │ │ MySQL   │ │ ES      │    │
+│  │ 缓存    │ │ 削峰    │ │ 持久化  │ │ 搜索    │    │
+│  └─────────┘ └─────────┘ └─────────┘ └─────────┘    │
+└──────────────────────────────────────────────────────┘
+```
+
+* * *
+
+## 三、核心技术方案
+
+### 3.1 缓存策略
+
+```kotlin
+// 多级缓存
+public Product getProduct(Long id) {
+    // 1. 本地缓存（Caffeine）
+    Product product = localCache.getIfPresent(id);
+    if (product != null) return product;
+    
+    // 2. 分布式缓存（Redis）
+    product = redisTemplate.opsForValue().get("product:" + id);
+    if (product != null) {
+        localCache.put(id, product);
+        return product;
+    }
+    
+    // 3. 数据库（加锁防止击穿）
+    synchronized (this) {
+        product = productMapper.selectById(id);
+        if (product != null) {
+            redisTemplate.opsForValue().set("product:" + id, product, 1, TimeUnit.HOURS);
+            localCache.put(id, product);
+        }
+    }
+    return product;
+}
+```
+
+### 3.2 库存扣减（防超卖）
+
+```java
+// 方案 1：Redis 原子操作
+public boolean deductStock(Long productId) {
+    String key = "stock:" + productId;
+    Long stock = redisTemplate.opsForValue().decrement(key);
+    if (stock < 0) {
+        redisTemplate.opsForValue().increment(key);
+        return false;
+    }
+    return true;
+}
+
+// 方案 2：Lua 脚本保证原子性
+String luaScript = 
+    "if redis.call('get', KEYS[1]) > 0 then " +
+    "    redis.call('decr', KEYS[1]) " +
+    "    return 1 " +
+    "else " +
+    "    return 0 " +
+    "end";
+
+// 方案 3：数据库乐观锁
+UPDATE product SET stock = stock - 1 
+WHERE id = ? AND stock > 0 AND version = ?
+```
+
+### 3.3 消息队列削峰
+
+```less
+// 下单请求先入队
+@PostMapping("/orders")
+public Result createOrder(@RequestBody OrderRequest request) {
+    // 1. 校验
+    if (!deductStock(request.getProductId())) {
+        return Result.fail("库存不足");
+    }
+    
+    // 2. 发送消息
+    mqTemplate.send("order.create", request);
+    
+    return Result.success("排队中");
+}
+
+// 消费者异步处理
+@Consumer(topic = "order.create")
+public void processOrder(OrderRequest request) {
+    // 创建订单
+    orderService.create(request);
+}
+```
+
+### 3.4 限流策略
+
+```kotlin
+// Nginx 限流
+limit_req_zone $binary_remote_addr zone=seckill:10m rate=10r/s;
+
+// 网关限流
+@Configuration
+public class RateLimiterConfig {
+    @Bean
+    public RateLimiter rateLimiter() {
+        return RateLimiter.create(1000); // 全局限流 1000 QPS
+    }
+}
+
+// 接口限流
+@RateLimiter(value = 100, timeout = 1)
+@PostMapping("/seckill/buy")
+public Result buy(@RequestBody BuyRequest request) {
+    return Result.success(orderService.seckill(request));
+}
+```
+
+* * *
+
+## 四、性能优化
+
+### 4.1 数据库优化
+
+```markdown
+1. 索引优化
+   - 主键索引
+   - 查询条件建索引
+   - 联合索引覆盖查询
+
+2. 分库分表
+   - 按用户 ID 分库
+   - 按时间分表
+   - 使用 ShardingSphere
+
+3. 读写分离
+   - 写主库
+   - 读从库
+```
+
+### 4.2 JVM 优化
+
+```ruby
+java -Xms4g -Xmx4g \
+     -XX:+UseG1GC \
+     -XX:MaxGCPauseMillis=50 \
+     -XX:+ParallelRefProcEnabled \
+     -XX:+AlwaysPreTouch \
+     -jar app.jar
+```
+
+### 4.3 网络优化
+
+```markdown
+1. CDN 加速
+2. HTTP/2
+3. Gzip 压缩
+4. 长连接
+```
+
+* * *
+
+## 五、高可用保障
+
+### 5.1 服务降级
+
+```kotlin
+@SentinelResource(value = "getProduct", fallback = "fallback")
+public Product getProduct(Long id) {
+    return productService.getById(id);
+}
+
+// 降级方法
+public Product fallback(Long id) {
+    return getDefaultProduct();
+}
+```
+
+### 5.2 服务熔断
+
+```ini
+// Sentinel 熔断规则
+FlowRule rule = new FlowRule();
+rule.setResource("createOrder");
+rule.setGrade(RuleConstant.FLOW_GRADE_QPS);
+rule.setCount(1000);
+FlowRuleManager.loadRules(Collections.singletonList(rule));
+```
+
+### 5.3 异常兜底
+
+```typescript
+@GlobalExceptionHandler
+public Result handleException(Exception e) {
+    log.error("系统异常", e);
+    return Result.fail("系统繁忙，请稍后重试");
+}
+```
+
+* * *
+
+## 六、监控告警
+
+### 6.1 核心指标
+
+```diff
+应用层：
+- QPS
+- 响应时间（P50、P95、P99）
+- 错误率
+
+系统层：
+- CPU 使用率
+- 内存使用率
+- 网络流量
+
+中间件：
+- Redis 命中率
+- MQ 堆积量
+- MySQL 连接数
+```
+
+### 6.2 告警规则
+
+```yaml
+# Prometheus 告警
+groups:
+  - name: seckill
+    rules:
+      - alert: HighQPS
+        expr: rate(http_requests_total[1m]) > 10000
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "QPS 过高"
+```
+
+* * *
+
+## 七、压测与容量规划
+
+### 7.1 压测工具
+
+```bash
+# JMeter 压测
+jmeter -n -t seckill.jmx -l result.jtl
+
+# wrk 压测
+wrk -t12 -c400 -d30s http://localhost:8080/api/seckill
+```
+
+### 7.2 容量规划
+
+```diff
+目标：支撑 1万 QPS
+
+单机性能：
+- 应用服务器：2000 QPS
+- MySQL：1000 QPS（写入）
+- Redis：10万 QPS
+
+规划：
+- 应用服务器：5台（冗余 1 台）
+- MySQL：主从 + 分库（10 个库）
+- Redis：集群（3 主 3 从）
+```
+
+* * *
+
+## 总结
+
+高并发系统设计核心要点：
+
+✅ **架构演进**：单体 → 缓存 → 微服务 → 完整架构 ✅ **缓存策略**：多级缓存、防击穿、防雪崩 ✅ **库存扣减**：Redis 原子操作、Lua 脚本、乐观锁 ✅ **削峰填谷**：消息队列异步处理 ✅ **限流熔断**：多级限流、服务降级 ✅ **监控告警**：核心指标、及时告警
+
+**记住**：没有最好的架构，只有最合适的架构。根据业务规模逐步演进。
+
+* * *
+
+> 💡 **互动**：你做过高并发系统吗？有什么经验分享？评论区聊聊！

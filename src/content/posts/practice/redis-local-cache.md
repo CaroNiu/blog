@@ -1,0 +1,444 @@
+---
+title: "Redis缓存 + 本地缓存实战指南"
+pubDate: 2026-04-01
+category: practice
+series: 高并发库存与缓存
+tags: []
+summary: "目录 为什么需要缓存？ Redis 缓存详解 本地缓存选型指南 Redis + 本地缓存组合策略 业务场景案例 常见问题与解决方案 最佳实践总结 一、为什么需要缓存？ 1.1 数据库的痛点 慢：MyS"
+draft: false
+juejin:
+  id: "7623270958960558116"
+  url: https://juejin.cn/post/7623270958960558116
+  views: 124
+  likes: 0
+
+---
+## 目录
+
+1.  为什么需要缓存？
+2.  Redis 缓存详解
+3.  本地缓存选型指南
+4.  Redis + 本地缓存组合策略
+5.  业务场景案例
+6.  常见问题与解决方案
+7.  最佳实践总结
+
+* * *
+
+## 一、为什么需要缓存？
+
+### 1.1 数据库的痛点
+
+-   **慢**：MySQL 单表超过千万级，查询可能就是几百毫秒甚至秒级
+-   **贵**：数据库连接是稀缺资源，高并发时连接池分分钟耗尽
+-   **脆**：大流量一来，数据库直接挂给你看
+
+### 1.2 缓存的价值
+
+| 指标 | 无缓存 | 有缓存 |
+| --- | --- | --- |
+| 响应时间 | 200-500ms | 5-20ms |
+| QPS 能力 | 几百 | 几万+ |
+| DB 负载 | 高 | 极低 |
+| 成本 | 高 | 低 |
+
+* * *
+
+## 二、Redis 缓存详解
+
+### 2.1 Redis 核心数据类型与使用场景
+
+#### 2.1.1 String - 最常用
+
+**场景**：热点数据缓存、计数器、Session
+
+```ini
+import redis
+
+r = redis.Redis(host='localhost', port=6379, decode_responses=True)
+
+# 1. 缓存用户信息
+user_id = "10001"
+cache_key = f"user:profile:{user_id}"
+user_data = r.get(cache_key)
+if not user_data:
+    user_data = db.query(f"SELECT * FROM users WHERE id={user_id}")
+    r.setex(cache_key, 3600, json.dumps(user_data))
+
+# 2. 计数器
+r.incr("api:count:users:10001")
+
+# 3. 分布式锁 - 秒杀场景
+lock_key = "lock:seckill:product:888"
+is_locked = r.set(lock_key, "1", nx=True, ex=10)
+if is_locked:
+    try:
+        r.decr("stock:product:888")
+    finally:
+        r.delete(lock_key)
+```
+
+#### 2.1.2 Hash - 对象存储
+
+**场景**：购物车、用户画像
+
+```ini
+# 购物车
+cart_key = "cart:user:10001"
+r.hincrby(cart_key, "product:888", 2)
+cart_items = r.hgetall(cart_key)
+```
+
+#### 2.1.3 List/Stream - 消息队列
+
+**场景**：异步任务、延迟队列
+
+```bash
+# 延迟队列
+r.lpush("delay:order:cancel", json.dumps({"order_id": "ORDER_001"}))
+```
+
+#### 2.1.4 Sorted Set - 排行榜
+
+**场景**：热搜榜、积分榜
+
+```python
+r.zadd("hot:search", {"口罩": 1000, "iPhone15": 800})
+r.zincrby("hot:search", 1, "口罩")
+top10 = r.zrevrange("hot:search", 0, 9, withscores=True)
+```
+
+### 2.2 Redis 缓存模式
+
+#### 2.2.1 Cache-Aside（旁路缓存）- 最常用
+
+```
+应用 → 查缓存 → 未命中 → 查DB → 写入缓存 → 返回
+```
+
+#### 2.2.2 Write-Through（写穿透）
+
+```
+应用 → 写DB → 同步写缓存 → 返回
+```
+
+#### 2.2.3 Write-Behind（异步写回）
+
+```
+应用 → 写缓存 → 异步批量写DB
+```
+
+### 2.3 Redis 集群与高可用
+
+| 部署模式 | 特点 | 适用场景 |
+| --- | --- | --- |
+| 主从复制 | 一主多从，读写分离 | 中小规模 |
+| Sentinel | 自动故障切换 | 生产环境高可用 |
+| Cluster | 分片存储，水平扩展 | 大规模数据 |
+
+* * *
+
+## 三、本地缓存选型指南
+
+### 3.1 主流方案对比
+
+| 方案 | 语言 | 性能 | 适用场景 |
+| --- | --- | --- | --- |
+| **Caffeine** | Java | ⭐⭐⭐⭐⭐ | Java 服务首选 |
+| **Guava** **Cache** | Java | ⭐⭐⭐⭐ | 简单场景 |
+| **Ehcache** | Java | ⭐⭐⭐ | 需要持久化 |
+| **node-cache** | Node.js | ⭐⭐⭐⭐ | Node.js 项目 |
+| **PySimpleCache** | Python | ⭐⭐⭐ | Python 项目 |
+
+### 3.2 Caffeine 详解（Java 首选）
+
+```sql
+Cache<String, User> cache = Caffeine.newBuilder()
+    .maximumSize(10_000)
+    .expireAfterWrite(5, TimeUnit.MINUTES)
+    .recordStats()
+    .build();
+
+cache.put("user:1001", new User("1001", "张三"));
+User user = cache.getIfPresent("user:1001");
+```
+
+#### 淘汰策略
+
+```scss
+Cache<String, Object> cache = Caffeine.newBuilder()
+    .maximumSize(10_000)
+    .maximumWeight(100 * 1024 * 1024)
+    .weigher((key, value) -> estimateSize(value))
+    .expireAfterWrite(10, TimeUnit.MINUTES)
+    .build();
+```
+
+#### 统计与监控
+
+```ini
+CacheStats stats = cache.stats();
+System.out.println("命中率: " + stats.hitRate());
+System.out.println("驱逐数量: " + stats.evictionCount());
+```
+
+* * *
+
+## 四、Redis + 本地缓存组合策略
+
+### 4.1 经典架构
+
+```scss
+请求 → 本地缓存(Caffeine) → 未命中 → Redis → 未命中 → 数据库
+```
+
+### 4.2 读写策略
+
+#### 读策略：Cache-Aside + 本地缓存
+
+```ini
+def get_user(user_id):
+    local_key = f"user:local:{user_id}"
+    redis_key = f"user:redis:{user_id}"
+    
+    # 1. 先查本地缓存
+    user = local_cache.get(local_key)
+    if user:
+        return user
+    
+    # 2. 查 Redis
+    user = redis.get(redis_key)
+    if user:
+        local_cache.set(local_key, user, ttl=300)
+        return user
+    
+    # 3. 查数据库
+    user = db.query(f"SELECT * FROM users WHERE id={user_id}")
+    if user:
+        redis.setex(redis_key, 3600, json.dumps(user))
+        local_cache.set(local_key, user, ttl=300)
+    return user
+```
+
+#### 写策略
+
+```python
+def update_user(user_id, data):
+    redis.delete(f"user:redis:{user_id}")
+    local_cache.delete(f"user:local:{user_id}")
+    db.update(f"UPDATE users SET ... WHERE id={user_id}")
+    time.sleep(0.1)  # 延迟双删
+    redis.delete(f"user:redis:{user_id}")
+```
+
+### 4.3 组合优势
+
+| 优势 | 说明 |
+| --- | --- |
+| 抗高峰 | 本地缓存扛住 90% 突发流量 |
+| 低延迟 | 本地 0.1ms vs Redis 1-5ms |
+| 高可用 | Redis 挂了本地还能撑一阵 |
+| 成本 | 减少 Redis 请求次数 |
+
+* * *
+
+## 五、业务场景案例
+
+### 5.1 案例一：电商商品详情页
+
+**背景**：亿级商品库，QPS 峰值 10 万/秒
+
+**解决方案**：三级缓存架构
+
+```scss
+请求 → Nginx缓存(1s) → 本地缓存(1min) → Redis(10min) → DB
+```
+
+**效果**：
+
+-   本地缓存命中率 70%
+-   Redis QPS 从 10 万降到 3 万
+-   响应时间从 200ms 降到 15ms
+
+* * *
+
+### 5.2 案例二：用户信息与权限缓存
+
+**痛点**：每次请求都查 Redis，网络开销大
+
+**方案**：用户信息本地缓存(5分钟) + 权限实时校验
+
+* * *
+
+### 5.3 案例三：分布式锁 + 本地锁防击穿
+
+**背景**：热点商品秒杀，瞬时 QPS 10 万
+
+**方案**：Redis 分布式锁 + 本地锁双重保护
+
+```python
+local_lock = Lock()
+
+def seckill(product_id, user_id):
+    with local_lock:
+        is_locked = redis.set(f"lock:seckill:{product_id}", user_id, nx=True, ex=10)
+        if not is_locked:
+            return seckill(product_id, user_id)
+        
+        stock = redis.decr(f"stock:{product_id}")
+        if stock < 0:
+            redis.incr(f"stock:{product_id}")
+            return {"success": False, "msg": "已售罄"}
+        
+        save_order_async(user_id, product_id)
+        return {"success": True}
+    redis.delete(f"lock:seckill:{product_id}")
+```
+
+* * *
+
+### 5.4 案例四：配置中心 + 本地缓存
+
+**方案**：配置本地缓存 + 监听变更实时更新
+
+* * *
+
+### 5.5 案例五：实时排行榜
+
+**场景**：直播间礼物榜、游戏战力榜
+
+**方案**：Redis ZSet + 本地缓存兜底
+
+```python
+r.zincrby(f"rank:gift:{room_id}", value, user_id)
+
+def get_top10(room_id):
+    local_key = f"local:rank:{room_id}"
+    if local_key in local_cache:
+        return local_cache[local_key]
+    top10 = r.zrevrange(f"rank:gift:{room_id}", 0, 9, withscores=True)
+    local_cache[local_key] = top10
+    return top10
+```
+
+* * *
+
+## 六、常见问题与解决方案
+
+### 6.1 数据一致性
+
+**方案A：延迟双删**
+
+```scss
+redis.delete(key)
+db.update(...)
+time.sleep(0.2)
+redis.delete(key)
+```
+
+**方案B：订阅binlog**
+
+-   使用 Canal 监听 MySQL binlog
+
+**方案C：** **TTL** **兜底**
+
+```bash
+redis.setex(key, 300, value)  # 5分钟
+```
+
+* * *
+
+### 6.2 缓存击穿
+
+**方案A：** **互斥锁**
+
+```csharp
+lock = redis.set(lock_key, "1", nx=True, ex=10)
+if not lock:
+    time.sleep(0.05)
+    return get_user(user_id)
+# ...查DB写缓存
+```
+
+#### 方案B：永不过期 + 异步更新
+
+* * *
+
+### 6.3 缓存雪崩
+
+1.  随机过期时间
+2.  预热缓存
+3.  Redis 集群高可用
+
+* * *
+
+### 6.4 本地缓存与 Redis 不一致
+
+```scss
+def update_user(user_id, data):
+    db.update(...)
+    redis.setex(key, 3600, json.dumps(data))
+    local_cache.delete(local_key)
+    redis.publish("cache:clear", local_key)
+```
+
+* * *
+
+### 6.5 内存膨胀
+
+必须设置上限和淘汰策略：
+
+```scss
+Caffeine.newBuilder()
+    .maximumSize(10_000)
+    .expireAfterWrite(10, TimeUnit.MINUTES)
+    .recordStats()
+    .build();
+```
+
+* * *
+
+### 6.6 多节点数据同步
+
+| 方案 | 复杂度 |
+| --- | --- |
+| Redis 集中式缓存 | 低 |
+| 发布/订阅通知 | 中 |
+| 定时全量同步 | 低 |
+
+* * *
+
+## 七、最佳实践总结
+
+### 7.1 缓存使用原则
+
+1.  读多写少 → 用缓存；写多读少 → 慎用
+2.  缓存非核心数据（不要缓存钱、库存）
+3.  设置 TTL
+4.  命中率 < 50% 就该优化
+
+### 7.2 分层策略
+
+| 数据类型 | 缓存层 | TTL |
+| --- | --- | --- |
+| 配置、字典 | 本地缓存 | 小时级 |
+| 用户信息 | 本地 + Redis | 5-30分钟 |
+| 商品详情 | 本地 + Redis | 10-30分钟 |
+| 实时数据 | 只用 Redis | 1-10分钟 |
+
+### 7.3 技术选型
+
+```python
+本地缓存：Java → Caffeine | Python → dict | Node.js → node-cache
+集中缓存：Redis（单实例/Cluster/Sentinel）
+架构：读 → 本地 → Redis → DB | 写 → DB → Redis → 删除本地
+```
+
+### 7.4 监控指标
+
+-   **Redis**：qps、内存使用率、命中率
+-   **Caffeine**：hit_rate(>80%)、eviction_count、estimated_size
+
+* * *
+
+> 作者：Caro | 版本：v1.0

@@ -1,0 +1,385 @@
+---
+title: "接口设计的 7 个最佳实践，少一个都可能出事"
+pubDate: 2026-03-19
+category: backend
+tags: []
+summary: "前言 接口是前后端沟通的桥梁，设计不好的接口会给后续开发和维护带来无穷无尽的麻烦。 这篇文章总结了 7 个接口设计的最佳实践，都是踩坑后的血泪教训。 一、RESTful 风格 1.1 使用标准 HTT"
+draft: false
+juejin:
+  id: "7618492703295127606"
+  url: https://juejin.cn/post/7618492703295127606
+  views: 113
+  likes: 0
+
+---
+## 前言
+
+接口是前后端沟通的桥梁，设计不好的接口会给后续开发和维护带来无穷无尽的麻烦。
+
+这篇文章总结了 7 个接口设计的最佳实践，都是踩坑后的血泪教训。
+
+* * *
+
+## 一、RESTful 风格
+
+### 1.1 使用标准 HTTP 方法
+
+```less
+// ✅ 正确：使用 HTTP 方法表达操作
+@GetMapping("/users")          // 查询列表
+@GetMapping("/users/{id}")     // 查询单个
+@PostMapping("/users")         // 创建
+@PutMapping("/users/{id}")     // 全量更新
+@PatchMapping("/users/{id}")   // 部分更新
+@DeleteMapping("/users/{id}")  // 删除
+```
+
+### 1.2 URL 设计原则
+
+```bash
+✅ 正确：
+- /users                    用户列表
+- /users/{id}              单个用户
+- /users/{id}/orders       用户订单
+- /orders/{id}/items       订单商品
+
+❌ 错误：
+- /getUserList             动词在 URL 中
+- /user/getById            嵌套层级太深
+- /userDelete/{id}         操作在 URL 中
+```
+
+### 1.3 复数命名
+
+```bash
+✅ 正确：
+- /users
+- /orders
+- /products
+
+❌ 错误：
+- /user
+- /order
+```
+
+* * *
+
+## 二、统一的响应格式
+
+### 2.1 响应结构
+
+```css
+{
+  "code": 200,
+  "message": "success",
+  "data": {
+    "id": 1,
+    "name": "阿牛"
+  },
+  "timestamp": 1704067200000,
+  "requestId": "req_123456"
+}
+```
+
+### 2.2 错误响应
+
+```json
+{
+  "code": 1001,
+  "message": "用户不存在",
+  "data": null,
+  "timestamp": 1704067200000,
+  "requestId": "req_123456"
+}
+```
+
+### 2.3 HTTP 状态码使用
+
+| 状态码 | 使用场景 |
+| --- | --- |
+| 200 | 成功 |
+| 201 | 创建成功 |
+| 400 | 请求参数错误 |
+| 401 | 未认证 |
+| 403 | 无权限 |
+| 404 | 资源不存在 |
+| 409 | 资源冲突（如重复提交） |
+| 500 | 服务器内部错误 |
+
+**注意**：业务错误用 code 区分，不要用 HTTP 状态码混合。
+
+* * *
+
+## 三、版本控制
+
+### 3.1 URL 路径版本
+
+```bash
+/v1/users        第一版 API
+/v2/users        第二版 API（有破坏性变更）
+```
+
+### 3.2 Header 版本
+
+```bash
+GET /users
+Accept: application/vnd.api+json;version=1
+```
+
+**推荐**：URL 路径版本更直观，推荐使用。
+
+* * *
+
+## 四、分页设计
+
+### 4.1 请求参数
+
+```matlab
+GET /users?page=1&size=20&sort=createdAt,desc
+
+参数说明：
+- page: 页码，从 1 开始
+- size: 每页数量，默认 20，最大 100
+- sort: 排序字段和方向
+```
+
+### 4.2 响应格式
+
+```css
+{
+  "code": 200,
+  "data": {
+    "list": [
+      {"id": 1, "name": "用户1"},
+      {"id": 2, "name": "用户2"}
+    ],
+    "pagination": {
+      "page": 1,
+      "size": 20,
+      "total": 100,
+      "pages": 5
+    }
+  }
+}
+```
+
+### 4.3 游标分页（大数据量）
+
+```diff
+GET /users?cursor=xxx&limit=20
+
+适用场景：
+- 数据量大
+- 需要避免深分页问题
+- 实时性要求高
+```
+
+* * *
+
+## 五、幂等性设计
+
+### 5.1 什么是幂等？
+
+```diff
+幂等：同样的请求执行一次和多次，结果相同。
+
+场景：
+- 用户重复点击提交按钮
+- 网络超时重试
+- 消息队列消费失败重试
+```
+
+### 5.2 实现方式
+
+**方式 1：Token 机制**
+
+```markdown
+1. 客户端先申请 Token
+   GET /tokens
+   
+2. 携带 Token 提交请求
+   POST /orders
+   Header: Idempotency-Key: {token}
+
+3. 服务端检查 Token 是否已使用
+   - 未使用：执行业务，标记 Token 已使用
+   - 已使用：返回上次结果
+```
+
+**方式 2：数据库唯一索引**
+
+```sql
+-- 订单表
+CREATE TABLE orders (
+    id BIGINT PRIMARY KEY,
+    order_no VARCHAR(64) UNIQUE,  -- 业务单号唯一
+    ...
+);
+```
+
+**方式 3：Redis 去重**
+
+```less
+@PostMapping("/orders")
+public Result createOrder(@RequestBody OrderRequest request,
+                          @RequestHeader("Idempotency-Key") String key) {
+    // 幂等性检查
+    if (!redisTemplate.opsForValue().setIfAbsent("order:" + key, "1", 5, TimeUnit.MINUTES)) {
+        // 重复请求，返回缓存结果
+        return Result.success(getCachedResult(key));
+    }
+    
+    // 执行业务
+    Order order = orderService.create(request);
+    cacheResult(key, order);
+    return Result.success(order);
+}
+```
+
+* * *
+
+## 六、安全性设计
+
+### 6.1 参数校验
+
+```less
+@Data
+public class CreateUserRequest {
+    
+    @NotBlank(message = "用户名不能为空")
+    @Size(min = 2, max = 20, message = "用户名长度2-20")
+    private String username;
+    
+    @NotBlank(message = "邮箱不能为空")
+    @Email(message = "邮箱格式错误")
+    private String email;
+    
+    @Min(0)
+    @Max(150)
+    private Integer age;
+}
+
+@PostMapping("/users")
+public Result create(@RequestBody @Valid CreateUserRequest request) {
+    // 参数已通过校验
+    return Result.success(userService.create(request));
+}
+```
+
+### 6.2 限流保护
+
+```less
+@RateLimiter(key = "api:createOrder", permitsPerSecond = 10)
+@PostMapping("/orders")
+public Result createOrder(@RequestBody OrderRequest request) {
+    return Result.success(orderService.create(request));
+}
+```
+
+### 6.3 敏感数据处理
+
+```json
+// ✅ 脱敏处理
+{
+  "phone": "138****8888",
+  "idCard": "110101********1234",
+  "bankCard": "622202*********1234"
+}
+```
+
+* * *
+
+## 七、可观测性设计
+
+### 7.1 统一日志
+
+```ini
+2024-01-01 10:00:00 [INFO] [req_abc123] [UserController] [getUser] 
+userId=123, cost=15ms, result=success
+```
+
+### 7.2 链路追踪
+
+```less
+// SkyWalking 自动埋点
+@Trace
+@GetMapping("/users/{id}")
+public User getUser(@PathVariable Long id) {
+    return userService.getById(id);
+}
+```
+
+### 7.3 指标监控
+
+```less
+// 自定义指标
+@Timed(value = "user.get", description = "获取用户耗时")
+@GetMapping("/users/{id}")
+public User getUser(@PathVariable Long id) {
+    return userService.getById(id);
+}
+```
+
+* * *
+
+## 八、完整示例
+
+```less
+@RestController
+@RequestMapping("/api/v1/users")
+@Tag(name = "用户管理")
+public class UserController {
+    
+    @Autowired
+    private UserService userService;
+    
+    @Operation(summary = "查询用户列表")
+    @GetMapping
+    public Result<PageResult<UserDTO>> list(
+            @RequestParam(defaultValue = "1") @Min(1) Integer page,
+            @RequestParam(defaultValue = "20") @Max(100) Integer size,
+            @RequestParam(required = false) String keyword) {
+        return Result.success(userService.list(page, size, keyword));
+    }
+    
+    @Operation(summary = "查询单个用户")
+    @GetMapping("/{id}")
+    public Result<UserDTO> getById(@PathVariable @Positive Long id) {
+        return Result.success(userService.getById(id));
+    }
+    
+    @Operation(summary = "创建用户")
+    @PostMapping
+    public Result<UserDTO> create(@RequestBody @Valid CreateUserRequest request) {
+        return Result.success(userService.create(request));
+    }
+    
+    @Operation(summary = "更新用户")
+    @PutMapping("/{id}")
+    public Result<UserDTO> update(@PathVariable @Positive Long id,
+                                   @RequestBody @Valid UpdateUserRequest request) {
+        return Result.success(userService.update(id, request));
+    }
+    
+    @Operation(summary = "删除用户")
+    @DeleteMapping("/{id}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void delete(@PathVariable @Positive Long id) {
+        userService.delete(id);
+    }
+}
+```
+
+* * *
+
+## 总结
+
+7 个接口设计最佳实践：
+
+✅ **RESTful 风格**：标准 HTTP 方法，清晰 URL ✅ **统一响应格式**：code、message、data 统一 ✅ **版本控制**：支持 API 迭代 ✅ **分页设计**：统一分页参数和响应 ✅ **幂等性**：防止重复提交 ✅ **安全性**：参数校验、限流、脱敏 ✅ **可观测性**：日志、链路追踪、指标
+
+**记住**：好的接口设计，前期多花 10% 时间，后期节省 50% 维护成本。
+
+* * *
+
+> 💡 **互动**：你在接口设计中踩过哪些坑？评论区分享一下！
