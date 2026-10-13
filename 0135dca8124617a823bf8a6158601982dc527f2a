@@ -1,0 +1,119 @@
+source/_posts/backend/observability-logs-metrics-tracing.md
+  6084f39780dde97c 3-7,9,16
+source/_posts/backend/high-concurrency-from-zero.md
+  6084f39780dde97c 3-6,8,15
+_config.yml
+  6084f39780dde97c 1-83
+source/_posts/backend/jvm-memory-gc-tuning.md
+  6084f39780dde97c 3-6,8,15
+source/_posts/backend/backend-starter-first-api.md
+  6084f39780dde97c 3-6,8,15
+source/_posts/ai/llm-app-prompt-to-rag.md
+  6084f39780dde97c 3-6,8,15
+source/_posts/ai/ai-coding-productivity-300.md
+  6084f39780dde97c 3-6,8,15
+source/_posts/career/involution-era-competitiveness.md
+  6084f39780dde97c 3-6,8,15
+source/_posts/backend/when-to-use-microservices.md
+  6084f39780dde97c 3-6,8,15
+source/_posts/backend/distributed-tx-2pc-3pc-tcc-saga.md
+  6084f39780dde97c 3-7,9,16
+source/_posts/career/ai-era-career-competitiveness.md
+  6084f39780dde97c 3-6,8,15
+source/_posts/backend/event-driven-architecture.md
+  6084f39780dde97c 3-6,8,15
+source/_posts/practice/deep-pagination-optimization.md
+  6084f39780dde97c 3-6,8,15
+source/_posts/backend/api-design-7-best-practices.md
+  6084f39780dde97c 3-6,8,15
+source/_posts/backend/serverless-when-how.md
+  6084f39780dde97c 3-6,8,15
+source/_posts/practice/api-debounce-request-dedup.md
+  6084f39780dde97c 3-6,8,15
+source/_posts/practice/kafka-practice-summary.md
+  6084f39780dde97c 3-6,8,15
+source/_posts/backend/istio-service-mesh.md
+  6084f39780dde97c 3-6,8,15
+source/_posts/backend/kubernetes-core-concepts.md
+  6084f39780dde97c 3-6,8,15
+source/_posts/practice/legacy-db-switch.md
+  6084f39780dde97c 3-6,8,15
+source/_posts/practice/redis-local-cache.md
+  6084f39780dde97c 3-7,9,16
+source/_posts/backend/api-gateway-selection.md
+  6084f39780dde97c 3-6,8,15
+source/_posts/backend/mysql-index-principles.md
+  6084f39780dde97c 3-6,8,15
+.gitignore
+  6084f39780dde97c 3-5
+source/_posts/backend/docker-practical-intro.md
+  6084f39780dde97c 3-6,8,15
+tools/migrate-to-hexo.mjs
+  6084f39780dde97c 1-113
+source/_posts/backend/seckill-architecture.md
+  6084f39780dde97c 3-7,9,16
+source/_posts/backend/backend-perf-100ms-to-10ms.md
+  6084f39780dde97c 3-7,9,16
+source/_posts/practice/mongodb-shard-key-mistake.md
+  6084f39780dde97c 3-6,8,15
+docs/长期内容规划.md
+  6084f39780dde97c 117-120
+source/_posts/career/coding-skill-vs-career-skill.md
+  6084f39780dde97c 3-6,8,15
+package.json
+  6084f39780dde97c 6-8,10-11,14-24
+source/_posts/practice/nginx-lb-algorithm-tuning.md
+  6084f39780dde97c 3-6,8,15
+source/_posts/practice/points-system-design.md
+  6084f39780dde97c 3-6,8,15
+source/_posts/practice/high-cpu-alert-diagnosis.md
+  6084f39780dde97c 3-7,9,16
+CLAUDE.md
+  6084f39780dde97c 3,7,10,18-22,24-25,27-29,33-34,42,49-50,54-57,59
+source/_posts/backend/mq-selection-comparison.md
+  6084f39780dde97c 3-6,8,15
+source/_posts/practice/design-patterns-in-business.md
+  6084f39780dde97c 3-6,8,15
+source/_posts/practice/inventory-deduction-approaches.md
+  6084f39780dde97c 3-7,9,16
+source/_posts/backend/external-api-design-guide.md
+  6084f39780dde97c 3-6,8,15
+source/_posts/backend/elasticsearch-to-production.md
+  6084f39780dde97c 3-6,8,15
+source/_posts/practice/payment-callback-idempotency.md
+  6084f39780dde97c 3-7,9,16
+source/_posts/practice/order-timeout-cancel-evolution.md
+  6084f39780dde97c 3-7,9,16
+source/_posts/backend/backend-security-defense.md
+  6084f39780dde97c 3-6,8,15
+source/_posts/backend/db-sharding-when-how.md
+  6084f39780dde97c 3-6,8,15
+source/_posts/backend/cache-penetration-breakdown-avalanche.md
+  6084f39780dde97c 3-7,9,16
+source/_posts/practice/distributed-tx-selection.md
+  6084f39780dde97c 3-7,9,16
+source/_posts/backend/essential-linux-commands.md
+  6084f39780dde97c 3-6,8,15
+source/_posts/backend/distributed-lock-5-implementations.md
+  6084f39780dde97c 3-7,9,16
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "0135dca8124617a823bf8a6158601982dc527f2a",
+  "prompts": {
+    "6084f39780dde97c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6753241f-7fa8-4e47-b30b-f0a9115153d4",
+        "model": "glm-5.3-flash"
+      },
+      "human_author": "CaroNiu",
+      "messages": [],
+      "total_additions": 58839,
+      "total_deletions": 23555,
+      "accepted_lines": 58831,
+      "overriden_lines": 0
+    }
+  }
+}
