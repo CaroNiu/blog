@@ -46,6 +46,8 @@ juejin:
 
 ## 常用操作
 
+- 内容后台：`npm run dev` → http://localhost:4321/keystatic（Keystatic 本地模式，仅 dev 可写、不影响生产构建；编辑直接落盘 posts/，之后照常 git 提交）
+- **字段同步红线**：frontmatter 字段增改必须同步两处——`src/content.config.ts`（Astro zod）+ `keystatic.config.ts`（后台表单）
 - 存量迁移：`node tools/export-juejin.mjs <掘金用户ID>`（导出到 `_inbox/`，再人工/AI 归类到 posts/）
 - 月度数据回收：更新各篇 `juejin.stats` + 调整 `docs/选题库.md` 优先级
 - 素材收集：随手追加到 `_inbox/素材收件箱.md`
